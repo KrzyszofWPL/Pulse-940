@@ -15,6 +15,7 @@ PASSWORD = "pulse"
 
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 LOCAL_PKG = os.path.join(REPO_ROOT, "pulse940")
+LOCAL_PROFILES = os.path.join(REPO_ROOT, "profiles")
 REMOTE_ROOT = "/opt/pulse940"
 
 OPENRC_SCRIPT = """#!/sbin/openrc-run
@@ -80,6 +81,9 @@ def main() -> int:
         sftp = client.open_sftp()
         print("Uploading pulse940/ to /opt/pulse940/pulse940...")
         upload_dir(sftp, LOCAL_PKG, posixpath.join(REMOTE_ROOT, "pulse940"))
+        if os.path.isdir(LOCAL_PROFILES):
+            print("Uploading profiles/ to /opt/pulse940/profiles...")
+            upload_dir(sftp, LOCAL_PROFILES, posixpath.join(REMOTE_ROOT, "profiles"))
 
         print("Installing OpenRC service /etc/init.d/pulse940...")
         with sftp.file("/etc/init.d/pulse940", "w") as fh:
@@ -98,7 +102,9 @@ def main() -> int:
 
         print("Enabling and starting pulse940 OpenRC service...")
         run_ssh(client, "rc-update add pulse940 default >/dev/null 2>&1 || true")
-        run_ssh(client, "rc-service pulse940 restart")
+        run_ssh(client, "rc-service pulse940 stop >/dev/null 2>&1 || pkill -9 -f '[p]ulse940.daemon' >/dev/null 2>&1 || true")
+        run_ssh(client, "rc-service pulse940 zap >/dev/null 2>&1 || true")
+        run_ssh(client, "rc-service pulse940 start")
         status = run_ssh(client, "rc-service pulse940 status")
         print(status.strip())
     finally:

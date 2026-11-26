@@ -1,0 +1,50 @@
+Filetype: IR signals file
+Version: 1
+#
+name: Power
+type: parsed
+protocol: NEC
+address: 04 00 00 00
+command: 08 00 00 00
+#
+name: Freeze
+type: parsed
+protocol: NECext
+address: 83 55 00 00
+command: 92 6D 00 00
+#
+name: AV_Mute
+type: parsed
+protocol: NECext
+address: 83 55 00 00
+command: 90 6F 00 00
+#
+name: HDMI1
+type: parsed
+protocol: NECext
+address: 83 55 00 00
+command: 9C 63 00 00
+#
+name: HDMI2
+type: parsed
+protocol: NECext
+address: 83 55 00 00
+command: 9D 62 00 00
+#
+name: USB
+type: parsed
+protocol: NECext
+address: 83 55 00 00
+command: 9E 61 00 00
+#
+name: Video
+type: parsed
+protocol: NECext
+address: 83 55 00 00
+command: 9F 60 00 00
+#
+name: LAN
+type: raw
+frequency: 38000
+duty_cycle: 0.330000
+data: 9000 4500 560 1690 560 560 560 1690 560

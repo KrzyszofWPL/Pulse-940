@@ -5,7 +5,6 @@ from __future__ import annotations
 import argparse
 import json
 import socket
-import sys
 
 
 def send_command(host: str, port: int, payload: dict) -> dict:
@@ -29,11 +28,38 @@ def main(argv: list[str] | None = None) -> int:
     sub.add_parser("ping")
     sub.add_parser("status")
     sub.add_parser("last-tx")
+    sub.add_parser("list-signals")
 
     tx_p = sub.add_parser("tx-raw")
     tx_p.add_argument("--carrier", type=int, default=38000)
     tx_p.add_argument("--duty", type=int, default=33)
     tx_p.add_argument("pulses", nargs="+", type=int, help="Odd-length us array")
+
+    sig_p = sub.add_parser("tx-signal")
+    sig_p.add_argument("name", help="Signal name from loaded .ir profile")
+
+    nec_p = sub.add_parser("tx-nec")
+    nec_p.add_argument("address", help="Hex address (e.g. 0x04)")
+    nec_p.add_argument("code", help="Hex command (e.g. 0x08)")
+    nec_p.add_argument("--ext", action="store_true", help="Use 16-bit NECext")
+
+    mac_p = sub.add_parser("macro")
+    mac_p.add_argument(
+        "action",
+        choices=[
+            "revert",
+            "freeze",
+            "av_mute",
+            "double_tap_power",
+            "schedule",
+            "cancel_schedule",
+            "loop_start",
+            "loop_stop",
+        ],
+    )
+    mac_p.add_argument("--signal", default="USB")
+    mac_p.add_argument("--delay", type=float, default=2.0)
+    mac_p.add_argument("--interval", type=float, default=2.0)
 
     args = parser.parse_args(argv)
 
@@ -43,12 +69,31 @@ def main(argv: list[str] | None = None) -> int:
         req = {"cmd": "status"}
     elif args.command == "last-tx":
         req = {"cmd": "last_tx"}
-    else:
+    elif args.command == "list-signals":
+        req = {"cmd": "list_signals"}
+    elif args.command == "tx-raw":
         req = {
             "cmd": "tx_raw",
             "carrier": args.carrier,
             "duty_cycle": args.duty,
             "pulses": args.pulses,
+        }
+    elif args.command == "tx-signal":
+        req = {"cmd": "tx_signal", "name": args.name}
+    elif args.command == "tx-nec":
+        req = {
+            "cmd": "tx_nec",
+            "address": int(args.address, 0),
+            "command": int(args.code, 0),
+            "ext": args.ext,
+        }
+    else:
+        req = {
+            "cmd": "macro",
+            "action": args.action,
+            "signal": args.signal,
+            "delay_s": args.delay,
+            "interval_s": args.interval,
         }
 
     resp = send_command(args.host, args.port, req)
