@@ -18,3 +18,11 @@ __pycache__/
 .venv/
 dist/
 build/
+
+# VM images & firmware (keep repo clean)
+vm/*.iso
+vm/*.qcow2
+vm/*.img
+vm/*.fd
+vm/*.vars
+
