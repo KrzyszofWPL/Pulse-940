@@ -1,6 +1,6 @@
 # Pulse 940
 
-A minimal, dedicated bare-metal Linux appliance for **Xiaomi Redmi 4A** (`xiaomi-rolex`, Qualcomm Snapdragon 425 / `qcom-msm89x7`, ARM64) — built for advanced infrared (IR) transmission, remote Bluetooth RFCOMM control, and passive RF room-context detection.
+A minimal, dedicated bare-metal Linux appliance for **ARM64 smartphones / Linux-capable mobile hardware** — built for advanced infrared (IR) transmission, remote Bluetooth RFCOMM control, and passive RF room-context detection.
 
 **Zero Android. Zero APK. Zero heavy GUI.**
 
@@ -21,12 +21,12 @@ Pulse 940 runs directly on a stripped **Alpine Linux / postmarketOS (`console`)*
 ## Core Architecture
 
 1. **Hardware Abstraction Layer (HAL)**
-   - **Target Hardware (`xiaomi-rolex`):** Native Linux LIRC (`/dev/lirc0`), `BlueZ` RFCOMM, `iw` wireless scanning, `evdev` hardware buttons, and `/sys/class/power_supply/` telemetry.
+   - **Target Hardware (ARM64 Linux):** Native Linux LIRC (`/dev/lirc0`), `BlueZ` RFCOMM, `iw` wireless scanning, `evdev` hardware buttons, and `/sys/class/power_supply/` telemetry.
    - **QEMU Dev Environment (Windows):** `MockLircDevice` (microsecond timing array validator) + TCP bridge (`port 9000`) simulating remote Master–Slave control.
 
 2. **Master–Slave Remote Control**
-   - The Redmi 4A acts as a stationary **Slave** listening for JSON commands over **Bluetooth RFCOMM (`BlueZ`)**, even with the display blanked (Stealth mode).
-   - Controlled remotely from a primary phone (**Moto G54** as Master) or a Windows CLI client during development.
+   - The device acts as a stationary **Slave** listening for JSON commands over **Bluetooth RFCOMM (`BlueZ`)**, even with the display blanked (Stealth mode).
+   - Controlled remotely from a primary mobile device (**Master**) or a desktop CLI client during development.
 
 3. **IR Engine & Macro System**
    - Direct Linux LIRC transmission without Android frame-length limits.
@@ -76,4 +76,4 @@ The repository currently includes the **QEMU ARM64 (`aarch64`)** virtual machine
 - [ ] Background daemon + JSON protocol (TCP / RFCOMM)
 - [ ] Passive Wi-Fi BSSID/RSSI fingerprinting & room profiles
 - [ ] Monochrome `tty1` TUI + `evdev` controls & live PWM visualizer
-- [ ] Deployment to `xiaomi-rolex` (`lk2nd` + postmarketOS)
+- [ ] Deployment to target ARM64 mobile hardware (`lk2nd` / mainline Linux + postmarketOS)
