@@ -18,8 +18,11 @@ try:
 except ImportError:  # Windows dev/test environment
     fcntl = None  # type: ignore[assignment]
 
+from pulse940.hal.haptics import HapticVibrator
+from pulse940.hal.sensors import SensorHub, SensorSnapshot
 from pulse940.hal.touch import EvdevTouchReader, TouchEvent
 from pulse940.ui.font8x8 import get_glyph_spans
+from pulse940.ui.scanner3d import Scanner3DState, render_scanner_3d
 
 FBIOGET_VSCREENINFO = 0x4600
 FBIOGET_FSCREENINFO = 0x4602
@@ -103,6 +106,20 @@ THEMES: list[Theme] = [
         warn=(255, 196, 64),
         danger=(240, 74, 84),
         ok=(80, 224, 156),
+    ),
+    Theme(
+        name="CRIMSON",
+        bg=(10, 6, 8),
+        panel=(22, 12, 16),
+        panel_alt=(38, 16, 22),
+        border=(110, 28, 42),
+        accent=(255, 46, 76),
+        accent_dim=(130, 22, 42),
+        text=(248, 240, 242),
+        text_dim=(172, 136, 144),
+        warn=(255, 190, 56),
+        danger=(255, 58, 72),
+        ok=(82, 232, 148),
     ),
 ]
 
@@ -255,6 +272,47 @@ class FramebufferCanvas:
         self.fill_rect(x, y, t, h, rgb)
         self.fill_rect(x + w - t, y, t, h, rgb)
 
+    def draw_line(
+        self,
+        x0: int,
+        y0: int,
+        x1: int,
+        y1: int,
+        rgb: tuple[int, int, int],
+        thickness: int = 1,
+    ) -> None:
+        """Draw a clipped Bresenham line directly into the framebuffer byte buffer."""
+        px = self._px(rgb)
+        bpp = self.bytes_pp
+        stride = self.stride
+        buf = self.buf
+        max_w = self.width
+        max_h = self.height
+        t = max(1, thickness)
+
+        dx = abs(x1 - x0)
+        sx = 1 if x0 < x1 else -1
+        dy = -abs(y1 - y0)
+        sy = 1 if y0 < y1 else -1
+        err = dx + dy
+
+        while True:
+            if t == 1:
+                if 0 <= x0 < max_w and 0 <= y0 < max_h:
+                    off = y0 * stride + x0 * bpp
+                    buf[off : off + bpp] = px
+            else:
+                self.fill_rect(x0 - t // 2, y0 - t // 2, t, t, rgb)
+            if x0 == x1 and y0 == y1:
+                break
+            e2 = 2 * err
+            if e2 >= dy:
+                err += dy
+                x0 += sx
+            if e2 <= dx:
+                err += dx
+                y0 += sy
+
     def draw_text(
         self,
         x: int,
@@ -388,7 +446,7 @@ class ApplianceUI:
         self.width = width
         self.height = height
         self.theme_idx = 0
-        self.tab = "universal"  # "universal" | "remote" | "radar"
+        self.tab = "universal"  # "universal" | "remote" | "radar" | "scan3d"
         self.category = "projector"
         self.action = "Power"
 
@@ -397,11 +455,15 @@ class ApplianceUI:
         self.signals: list[str] = []
         self.rf_data: dict | None = None
         self.priority_brands: list[str] = []
-        self.feedback: str = "READY // SELECT UNIVERSAL OR RADAR"
+        self.feedback: str = "READY // SELECT UNIVERSAL OR 3D SCAN"
         self.active_flash_key: str | None = None
         self.active_flash_until: float = 0.0
         self.poweroff_confirm_until: float = 0.0
         self.slider_rect: tuple[int, int, int, int] = (140, 144, 440, 48)
+        self.scanner3d = Scanner3DState()
+        self.sensor_snap: SensorSnapshot | None = None
+        self.haptics = HapticVibrator(force_mock=True)
+        self.last_3d_events: dict = {}
 
     @property
     def theme(self) -> Theme:
@@ -421,10 +483,11 @@ class ApplianceUI:
             RectButton("bl_down", "", 36, 140, 88, 56),
             RectButton("bl_slider", "", 140, 138, 440, 62),
             RectButton("bl_up", "", 596, 140, 88, 56),
-            # 3 top tabs
-            RectButton("tab", "universal", 24, 222, 214, 58),
-            RectButton("tab", "remote", 253, 222, 214, 58),
-            RectButton("tab", "radar", 482, 222, 214, 58),
+            # 4 top tabs
+            RectButton("tab", "universal", 24, 222, 158, 58),
+            RectButton("tab", "remote", 195, 222, 158, 58),
+            RectButton("tab", "radar", 366, 222, 158, 58),
+            RectButton("tab", "scan3d", 537, 222, 158, 58),
             # 4 bottom dock buttons
             RectButton("screen_off", "", 24, 1146, 162, 106),
             RectButton("theme", "", 194, 1146, 162, 106),
@@ -488,6 +551,17 @@ class ApplianceUI:
                 ]
             )
             return btns
+
+        if self.tab == "scan3d":
+            return [
+                RectButton("scan3d_viewport", "", 24, 294, 672, 460),
+                RectButton("scan3d_sub", "rf3d", 24, 766, 214, 78),
+                RectButton("scan3d_sub", "emf", 253, 766, 214, 78),
+                RectButton("scan3d_sub", "geiger", 482, 766, 214, 78),
+                RectButton("rf_scan", "", 24, 856, 214, 78),
+                RectButton("scan3d_imu", "", 253, 856, 214, 78),
+                RectButton("scan3d_haptic", "", 482, 856, 214, 78),
+            ]
 
         # radar tab
         btns.append(RectButton("rf_scan", "", 24, 294, 672, 86))
@@ -798,6 +872,73 @@ class ApplianceUI:
         canvas.draw_rect_border(470, 954, 210, 74, t.accent, thickness=2)
         canvas.draw_text_centered(575, 991, "ROTATE ID", t.accent, scale=2)
 
+    def _render_scan3d_tab(self, canvas: FramebufferCanvas, t: Theme, now: float) -> None:
+        snap = self.sensor_snap or SensorSnapshot(
+            backend="mock_sensors",
+            heading_deg=0.0,
+            pitch_deg=25.0,
+            roll_deg=0.0,
+            accel_x=0.0,
+            accel_y=4.2,
+            accel_z=8.8,
+            mag_x_ut=24.0,
+            mag_y_ut=5.0,
+            mag_z_ut=-38.0,
+            mag_total_ut=45.2,
+            prox_raw=0,
+            prox_blocked=False,
+            timestamp=now,
+        )
+        self.last_3d_events = render_scanner_3d(canvas, self.scanner3d, snap, t, now=now)
+
+        # Sub-mode selector buttons (y=766..844)
+        sub_specs = [("rf3d", "RF 3D MAP", 24), ("emf", "EMF 3D", 253), ("geiger", "GEIGER", 482)]
+        for skey, slabel, bx in sub_specs:
+            sel = self.scanner3d.submode == skey
+            canvas.fill_rect(bx, 766, 214, 78, t.accent if sel else t.panel)
+            canvas.draw_rect_border(
+                bx, 766, 214, 78, t.accent if sel else t.border, thickness=2
+            )
+            canvas.draw_text_centered(
+                bx + 107, 805, slabel, t.bg if sel else t.text, scale=2
+            )
+
+        # Control buttons (y=856..934)
+        ctrl_specs = [
+            ("RESCAN RF", t.panel_alt, t.accent_dim, t.accent),
+            (
+                "IMU: LIVE" if self.scanner3d.imu_mode else "IMU: AUTO",
+                t.panel_alt,
+                t.accent if self.scanner3d.imu_mode else t.border,
+                t.accent if self.scanner3d.imu_mode else t.text_dim,
+            ),
+            (
+                "HAPTIC:ON" if self.haptics.enabled else "HAPTIC:NO",
+                t.panel_alt,
+                t.ok if self.haptics.enabled else t.border,
+                t.ok if self.haptics.enabled else t.text_dim,
+            ),
+        ]
+        for idx, (clbl, bg_c, bd_c, fg_c) in enumerate(ctrl_specs):
+            bx = 24 + idx * 229
+            canvas.fill_rect(bx, 856, 214, 78, bg_c)
+            canvas.draw_rect_border(bx, 856, 214, 78, bd_c, thickness=2)
+            canvas.draw_text_centered(bx + 107, 895, clbl, fg_c, scale=2)
+
+        # Live IMU / EMF / Prox telemetry strip (y=946..1048)
+        canvas.fill_rect(24, 946, 672, 102, t.panel)
+        canvas.draw_rect_border(24, 946, 672, 102, t.border, thickness=2)
+        prox_txt = "BLOCKED" if snap.prox_blocked else "CLEAR"
+        prox_col = t.danger if snap.prox_blocked else t.ok
+        canvas.draw_text(
+            40,
+            962,
+            f"HDG:{snap.heading_deg:5.1f}  PIT:{snap.pitch_deg:+5.1f}  EMF:{snap.mag_total_ut:5.1f}uT",
+            t.text,
+            scale=2,
+        )
+        canvas.draw_text(40, 1002, f"TARGETS:{len(self.scanner3d.objects):2d}  PROX:{prox_txt}", prox_col, scale=2)
+
     def render(self, canvas: FramebufferCanvas, now: float | None = None) -> None:
         if now is None:
             now = time.monotonic()
@@ -864,13 +1005,18 @@ class ApplianceUI:
         canvas.draw_text_centered(640, 168, "+", t.accent, scale=4)
 
         # 3. Top Navigation Tabs (y=222..280)
-        tab_specs = [("universal", "UNIVERSAL", 24), ("remote", "REMOTE", 253), ("radar", "RADAR", 482)]
+        tab_specs = [
+            ("universal", "UNIV", 24),
+            ("remote", "REMOTE", 195),
+            ("radar", "RADAR", 366),
+            ("scan3d", "3D SCAN", 537),
+        ]
         for tkey, tlabel, tx in tab_specs:
             active = self.tab == tkey
-            canvas.fill_rect(tx, 222, 214, 58, t.accent if active else t.panel)
-            canvas.draw_rect_border(tx, 222, 214, 58, t.accent if active else t.border, thickness=2)
+            canvas.fill_rect(tx, 222, 158, 58, t.accent if active else t.panel)
+            canvas.draw_rect_border(tx, 222, 158, 58, t.accent if active else t.border, thickness=2)
             canvas.draw_text_centered(
-                tx + 107, 251, tlabel, t.bg if active else t.text, scale=2
+                tx + 79, 251, tlabel, t.bg if active else t.text, scale=2
             )
 
         # 4. Active Tab Content
@@ -878,8 +1024,10 @@ class ApplianceUI:
             self._render_universal_tab(canvas, t, now)
         elif self.tab == "remote":
             self._render_remote_tab(canvas, t, now)
-        else:
+        elif self.tab == "radar":
             self._render_radar_tab(canvas, t, now)
+        else:
+            self._render_scan3d_tab(canvas, t, now)
 
         # 5. Status Bar (y=1062..1130)
         canvas.fill_rect(24, 1062, 672, 68, t.panel)
@@ -1038,6 +1186,7 @@ class ApplianceUI:
                     {"cmd": "rf_scan", "auto_load": True, "include_ble": True}, timeout=9.0
                 )
                 self.rf_data = res
+                self.scanner3d.update_rf(res, now=now)
                 brands = res.get("brands") or []
                 if brands:
                     self.priority_brands = list(brands)
@@ -1045,6 +1194,41 @@ class ApplianceUI:
                 self.feedback = (
                     f"RADAR: {res.get('ap_count', 0)} AP/{res.get('ble_count', 0)} BLE | {room[:12].upper()}"
                 )
+                self.haptics.buzz(30, 0x9000)
+                return True
+
+            if btn.action == "scan3d_sub":
+                self.scanner3d.submode = btn.arg
+                self.feedback = f"3D MODE: {btn.arg.upper()}"
+                self.haptics.buzz(25, 0x7000)
+                return True
+
+            if btn.action == "scan3d_imu":
+                self.scanner3d.imu_mode = not self.scanner3d.imu_mode
+                self.feedback = "IMU: LIVE GYRO/MAG" if self.scanner3d.imu_mode else "IMU: AUTO ORBIT"
+                self.haptics.buzz(25, 0x7000)
+                return True
+
+            if btn.action == "scan3d_haptic":
+                self.haptics.enabled = not self.haptics.enabled
+                self.feedback = f"HAPTIC: {'ON' if self.haptics.enabled else 'OFF'}"
+                if self.haptics.enabled:
+                    self.haptics.buzz(40, 0xA000)
+                return True
+
+            if btn.action == "scan3d_viewport":
+                if self.scanner3d.submode == "geiger":
+                    tgt = self.scanner3d.cycle_geiger_target()
+                    self.feedback = f"TARGET: {tgt.label.upper()}" if tgt else "NO TARGETS"
+                else:
+                    res = rpc.call(
+                        {"cmd": "rf_scan", "auto_load": False, "include_ble": False},
+                        timeout=4.0,
+                    )
+                    self.rf_data = res
+                    self.scanner3d.update_rf(res, now=now)
+                    self.feedback = f"3D UPDATED: {res.get('ap_count', 0)} AP"
+                self.haptics.buzz(25, 0x7000)
                 return True
 
             if btn.action == "pick_brand":
@@ -1125,10 +1309,15 @@ def run_fb_ui(host: str = "127.0.0.1", port: int = 9000) -> int:
     canvas = FramebufferCanvas.open_fb0()
     touch = EvdevTouchReader(screen_w=canvas.width, screen_h=canvas.height)
     ui = ApplianceUI(width=canvas.width, height=canvas.height)
+    sensors = SensorHub()
+    ui.haptics = HapticVibrator()
     rpc = RpcClient(host=host, port=port)
 
     last_poll = 0.0
     last_bl_poll = 0.0
+    last_3d_frame = 0.0
+    last_3d_rf = 0.0
+    last_fx_pulse = 0.0
     last_sys_bl: int | None = _read_sysfs_brightness()
     dirty = True
 
@@ -1149,6 +1338,27 @@ def run_fb_ui(host: str = "127.0.0.1", port: int = 9000) -> int:
                     dirty = True
 
             is_blanked = last_sys_bl == 0
+            in_3d = (ui.tab == "scan3d") and (not is_blanked)
+            if in_3d:
+                sensors.start()
+                ui.sensor_snap = sensors.read()
+                if now - last_3d_rf >= 3.5:
+                    last_3d_rf = now
+                    try:
+                        rf_fast = rpc.call(
+                            {"cmd": "rf_scan", "auto_load": False, "include_ble": False},
+                            timeout=3.0,
+                        )
+                        ui.rf_data = rf_fast
+                        ui.scanner3d.update_rf(rf_fast, now=now)
+                    except Exception:
+                        pass
+                if now - last_3d_frame >= 0.075:
+                    last_3d_frame = now
+                    dirty = True
+            else:
+                sensors.stop()
+
             poll_interval = 0.25 if ui._is_sweeping() else 1.2
             if not is_blanked and (now - last_poll >= poll_interval):
                 last_poll = now
@@ -1175,9 +1385,28 @@ def run_fb_ui(host: str = "127.0.0.1", port: int = 9000) -> int:
                 canvas.flush()
                 dirty = False
 
+                if in_3d:
+                    ev3d = ui.last_3d_events
+                    geiger_int = ev3d.get("geiger_interval_s")
+                    min_gap = geiger_int if geiger_int else 0.45
+                    if (
+                        ev3d.get("sonar_hit")
+                        or ev3d.get("prox_alert")
+                        or ev3d.get("emf_alert")
+                        or geiger_int is not None
+                    ) and (now - last_fx_pulse >= min_gap):
+                        last_fx_pulse = now
+                        try:
+                            rpc.call({"cmd": "led", "action": "pulse", "duration_ms": 40})
+                        except Exception:
+                            pass
+                        if ev3d.get("prox_alert") or ev3d.get("emf_alert") or geiger_int:
+                            ui.haptics.buzz(25, 0x8000)
+
             wait_fds = [touch.fd] if touch.fd is not None else []
+            wait_s = 0.06 if in_3d else 0.10
             if wait_fds:
-                select.select(wait_fds, [], [], 0.10)
+                select.select(wait_fds, [], [], wait_s)
                 events = touch.read_events()
                 if not is_blanked:
                     for ev in events:
@@ -1186,10 +1415,12 @@ def run_fb_ui(host: str = "127.0.0.1", port: int = 9000) -> int:
                             last_bl_poll = 0.0
                             last_poll = 0.0
             else:
-                time.sleep(0.10)
+                time.sleep(wait_s)
     except KeyboardInterrupt:
         return 0
     finally:
+        sensors.stop()
+        ui.haptics.close()
         touch.close()
         canvas.close()
 

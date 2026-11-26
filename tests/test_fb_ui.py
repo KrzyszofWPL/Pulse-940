@@ -133,7 +133,7 @@ class TestFramebufferUI(unittest.TestCase):
             "total_duration_us": 17430,
             "pulses_us": [9000, 4500, 560, 560, 560, 1690, 560],
         }
-        for tab_name in ("universal", "remote", "radar"):
+        for tab_name in ("universal", "remote", "radar", "scan3d"):
             ui.tab = tab_name
             ui.render(canvas, now=10.0)
             self.assertEqual(len(canvas.buf), 2944 * 1280)
@@ -162,20 +162,30 @@ class TestFramebufferUI(unittest.TestCase):
         self.assertTrue(ui.handle_touch(TouchEvent("down", 360, 780), rpc, now=1.4))
         self.assertEqual(rpc.calls[-1]["cmd"], "sweep_lock")
 
-        # Switch to REMOTE tab and tap first signal card
-        self.assertTrue(ui.handle_touch(TouchEvent("down", 350, 250), rpc, now=1.5))
+        # Switch to REMOTE tab (x=270) and tap first signal card
+        self.assertTrue(ui.handle_touch(TouchEvent("down", 270, 250), rpc, now=1.5))
         self.assertEqual(ui.tab, "remote")
         self.assertTrue(ui.handle_touch(TouchEvent("down", 120, 520), rpc, now=1.6))
         self.assertEqual(rpc.calls[-2], {"cmd": "tx_signal", "name": "Power"})
 
-        # Switch to RADAR tab, run passive Wi-Fi/BLE scan, save room, rotate privacy ID
-        self.assertTrue(ui.handle_touch(TouchEvent("down", 560, 250), rpc, now=1.7))
+        # Switch to RADAR tab (x=440), run passive Wi-Fi/BLE scan, rotate privacy ID
+        self.assertTrue(ui.handle_touch(TouchEvent("down", 440, 250), rpc, now=1.7))
         self.assertEqual(ui.tab, "radar")
         self.assertTrue(ui.handle_touch(TouchEvent("down", 360, 330), rpc, now=1.8))
         self.assertEqual(rpc.calls[-1]["cmd"], "rf_scan")
         self.assertEqual(ui.priority_brands, ["Epson", "Samsung"])
         self.assertTrue(ui.handle_touch(TouchEvent("down", 560, 990), rpc, now=1.9))
         self.assertEqual(rpc.calls[-1]["cmd"], "privacy_rotate")
+
+        # Switch to 3D SCAN tab (x=610), toggle EMF 3D, IMU, Haptic, and CRIMSON theme
+        self.assertTrue(ui.handle_touch(TouchEvent("down", 610, 250), rpc, now=1.92))
+        self.assertEqual(ui.tab, "scan3d")
+        self.assertTrue(ui.handle_touch(TouchEvent("down", 360, 800), rpc, now=1.94))
+        self.assertEqual(ui.scanner3d.submode, "emf")
+        self.assertTrue(ui.handle_touch(TouchEvent("down", 360, 890), rpc, now=1.96))
+        self.assertFalse(ui.scanner3d.imu_mode)
+        self.assertTrue(ui.handle_touch(TouchEvent("down", 560, 890), rpc, now=1.98))
+        self.assertFalse(ui.haptics.enabled)
 
         # Two-tap POWER OFF safety confirmation
         self.assertTrue(ui.handle_touch(TouchEvent("down", 600, 1200), rpc, now=2.0))
