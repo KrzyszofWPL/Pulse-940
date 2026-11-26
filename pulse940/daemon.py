@@ -80,11 +80,31 @@ def main(argv: list[str] | None = None) -> int:
     )
     server = BridgeServer(dispatcher=dispatcher, host=args.host, port=args.port)
 
+    def _handle_vol_up() -> None:
+        if backlight.get_state().blanked:
+            return
+        st = backlight.step_up(15)
+        log.info("Vol+ -> brightness=%d (%d%%)", st.brightness, st.pct)
+
+    def _handle_vol_down() -> None:
+        if backlight.get_state().blanked:
+            return
+        st = backlight.step_down(15, min_brightness=8)
+        log.info("Vol- -> brightness=%d (%d%%)", st.brightness, st.pct)
+
+    def _handle_power_short() -> None:
+        st = backlight.toggle_blank()
+        log.info("Power short -> blanked=%s brightness=%d", st.blanked, st.brightness)
+
+    def _handle_power_long() -> None:
+        log.warning("Power long press detected -> initiating system poweroff")
+        _trigger_poweroff(backlight)
+
     buttons = EvdevButtonMonitor(
-        on_vol_up=lambda: backlight.step_up(10),
-        on_vol_down=lambda: backlight.step_down(10),
-        on_power_short=lambda: backlight.toggle_blank(),
-        on_power_long=lambda: _trigger_poweroff(backlight),
+        on_vol_up=_handle_vol_up,
+        on_vol_down=_handle_vol_down,
+        on_power_short=_handle_power_short,
+        on_power_long=_handle_power_long,
     )
 
     stop_event = threading.Event()

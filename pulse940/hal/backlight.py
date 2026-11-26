@@ -112,11 +112,15 @@ class BacklightController:
             nxt = step if cur == 0 else min(self._max, cur + step)
         return self.set_brightness(nxt)
 
-    def step_down(self, step_pct: int = 10) -> BacklightState:
+    def step_down(self, step_pct: int = 10, min_brightness: int = 0) -> BacklightState:
         with self._lock:
             cur = self._current_brightness_unlocked()
-            step = max(1, round(self._max * step_pct / 100))
-            nxt = max(0, cur - step)
+            floor = max(0, min(self._max, int(min_brightness)))
+            if cur <= floor:
+                nxt = cur if cur == 0 else floor
+            else:
+                step = max(1, round(self._max * step_pct / 100))
+                nxt = max(floor, cur - step)
         return self.set_brightness(nxt)
 
     def toggle_blank(self) -> BacklightState:

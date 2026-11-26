@@ -3,18 +3,30 @@
 from __future__ import annotations
 
 import os
+import struct
 import tempfile
 import unittest
 
 from pulse940.hal.backlight import BacklightController
 from pulse940.hal.buttons import (
+    EV_KEY,
     KEY_POWER,
     KEY_VOLUMEDOWN,
     KEY_VOLUMEUP,
     PowerKeyStateMachine,
+    parse_input_events,
 )
 from pulse940.hal.lirc import MockLircDevice
 from pulse940.hal.power import PowerMonitor
+from pulse940.hal.touch import (
+    ABS_MT_POSITION_X,
+    ABS_MT_POSITION_Y,
+    ABS_MT_TRACKING_ID,
+    EV_ABS,
+    EV_SYN,
+    SYN_REPORT,
+    TouchStateMachine,
+)
 from pulse940.net.bridge import CommandDispatcher
 
 
@@ -86,6 +98,57 @@ class TestPowerKeyStateMachine(unittest.TestCase):
         self.assertEqual(sm.poll_timeout(12.6), "power_long")
         self.assertIsNone(sm.poll_timeout(13.0))
         self.assertIsNone(sm.on_event(KEY_POWER, 0, 13.1))
+
+    def test_step_down_respects_min_brightness_floor(self) -> None:
+        bl = BacklightController(sysfs_root="/nonexistent/backlight")
+        bl.set_brightness(20)
+        st = bl.step_down(15, min_brightness=8)
+        self.assertEqual(st.brightness, 8)
+        self.assertFalse(st.blanked)
+        st2 = bl.step_down(15, min_brightness=8)
+        self.assertEqual(st2.brightness, 8)
+
+    def test_parse_24byte_lp64_evdev_events(self) -> None:
+        lp64_struct = struct.Struct("<qqHHi")
+        raw = (
+            lp64_struct.pack(100, 1000, EV_KEY, KEY_VOLUMEUP, 1)
+            + lp64_struct.pack(100, 2000, EV_KEY, KEY_VOLUMEDOWN, 1)
+            + lp64_struct.pack(101, 0, EV_KEY, KEY_POWER, 1)
+            + lp64_struct.pack(101, 150000, EV_KEY, KEY_POWER, 0)
+            + b"\xaa\xbb"  # trailing partial chunk ignored safely
+        )
+        events = parse_input_events(raw, ev_struct=lp64_struct)
+        self.assertEqual(
+            events,
+            [
+                (EV_KEY, KEY_VOLUMEUP, 1),
+                (EV_KEY, KEY_VOLUMEDOWN, 1),
+                (EV_KEY, KEY_POWER, 1),
+                (EV_KEY, KEY_POWER, 0),
+            ],
+        )
+
+    def test_touch_state_machine_type_b(self) -> None:
+        tsm = TouchStateMachine(
+            screen_w=720, screen_h=1280, x_bounds=(0, 719), y_bounds=(0, 1279)
+        )
+        evs = tsm.feed(
+            [
+                (EV_ABS, ABS_MT_TRACKING_ID, 1),
+                (EV_ABS, ABS_MT_POSITION_X, 360),
+                (EV_ABS, ABS_MT_POSITION_Y, 640),
+                (EV_SYN, SYN_REPORT, 0),
+                (EV_ABS, ABS_MT_POSITION_X, 400),
+                (EV_SYN, SYN_REPORT, 0),
+                (EV_ABS, ABS_MT_TRACKING_ID, -1),
+                (EV_SYN, SYN_REPORT, 0),
+            ]
+        )
+        self.assertEqual([(e.kind, e.x, e.y) for e in evs], [
+            ("down", 360, 640),
+            ("move", 400, 640),
+            ("up", 400, 640),
+        ])
 
 
 class TestPowerMonitorThermalAndGauge(unittest.TestCase):

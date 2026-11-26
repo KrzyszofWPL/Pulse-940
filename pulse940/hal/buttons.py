@@ -18,8 +18,22 @@ KEY_VOLUMEDOWN = 114
 KEY_VOLUMEUP = 115
 KEY_POWER = 116
 
-# 64-bit Linux struct input_event: timeval (ll) + type (H) + code (H) + value (I)
-INPUT_EVENT_STRUCT = struct.Struct("<llHHI")
+# Native Linux struct input_event: timeval (ll) + type (H) + code (H) + value (i)
+# 24 bytes on 64-bit Linux (aarch64/x86_64), 16 bytes on 32-bit Linux.
+INPUT_EVENT_STRUCT = struct.Struct("llHHi")
+
+
+def parse_input_events(
+    chunk: bytes, ev_struct: struct.Struct = INPUT_EVENT_STRUCT
+) -> list[tuple[int, int, int]]:
+    """Unpack raw Linux input_event bytes into (type, code, value) tuples."""
+    ev_size = ev_struct.size
+    limit = len(chunk) - (len(chunk) % ev_size)
+    events: list[tuple[int, int, int]] = []
+    for offset in range(0, limit, ev_size):
+        _, _, ev_type, code, value = ev_struct.unpack_from(chunk, offset)
+        events.append((ev_type, code, value))
+    return events
 
 
 class PowerKeyStateMachine:
@@ -128,7 +142,11 @@ class EvdevButtonMonitor:
         if not self._fds:
             return
 
-        log.info("Listening for physical buttons on %s", ", ".join(paths))
+        log.info(
+            "Listening for physical buttons on %s (struct=%dB)",
+            ", ".join(paths),
+            INPUT_EVENT_STRUCT.size,
+        )
         self._stop_event.clear()
         self._thread = threading.Thread(target=self._run, daemon=True)
         self._thread.start()
@@ -140,7 +158,6 @@ class EvdevButtonMonitor:
                 readable, _, _ = select.select(self._fds, [], [], 0.15)
             except (OSError, ValueError):
                 break
-            now = time.monotonic()
             for fd in readable:
                 while True:
                     try:
@@ -151,13 +168,21 @@ class EvdevButtonMonitor:
                         chunk = b""
                     if not chunk:
                         break
-                    for offset in range(0, len(chunk) - (len(chunk) % ev_size), ev_size):
-                        _, _, ev_type, code, value = INPUT_EVENT_STRUCT.unpack_from(
-                            chunk, offset
-                        )
+                    for ev_type, code, value in parse_input_events(chunk):
                         if ev_type == EV_KEY:
-                            self._dispatch(self._sm.on_event(code, value, time.monotonic()))
-            self._dispatch(self._sm.poll_timeout(time.monotonic()))
+                            action = self._sm.on_event(code, value, time.monotonic())
+                            if action is not None:
+                                log.info(
+                                    "Button key event: code=%d value=%d -> %s",
+                                    code,
+                                    value,
+                                    action,
+                                )
+                                self._dispatch(action)
+            timeout_action = self._sm.poll_timeout(time.monotonic())
+            if timeout_action is not None:
+                log.info("Button timeout event -> %s", timeout_action)
+                self._dispatch(timeout_action)
 
     def stop(self) -> None:
         self._stop_event.set()

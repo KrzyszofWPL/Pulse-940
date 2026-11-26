@@ -128,7 +128,7 @@ def main() -> int:
                 "echo '/opt/pulse940' > \"$SP/pulse940.pth\"",
                 "printf '#!/bin/sh\\ncd /opt/pulse940 && exec python3 -m pulse940.tui.app \"$@\"\\n' > /usr/local/bin/pulse940-tui",
                 "chmod +x /usr/local/bin/pulse940-tui",
-                "printf '#!/bin/sh\\nexport HOME=/root\\nexport TERM=linux\\ncd /opt/pulse940\\ni=0\\nwhile [ $i -lt 20 ]; do\\n  python3 -c \"import socket; s=socket.create_connection((\\\"127.0.0.1\\\",9000),0.2); s.close()\" 2>/dev/null && break\\n  sleep 0.2\\n  i=$((i+1))\\ndone\\npython3 -m pulse940.tui.app\\nexec /bin/sh -l\\n' > /usr/local/bin/pulse940-login",
+                "printf '#!/bin/sh\\nexport HOME=/root\\nexport TERM=linux\\ncd /opt/pulse940\\ni=0\\nwhile [ $i -lt 20 ]; do\\n  python3 -c \"import socket; s=socket.create_connection((\\\"127.0.0.1\\\",9000),0.2); s.close()\" 2>/dev/null && break\\n  sleep 0.2\\n  i=$((i+1))\\ndone\\nif [ -c /dev/fb0 ]; then\\n  python3 -m pulse940.ui.fb_app || python3 -m pulse940.tui.app\\nelse\\n  python3 -m pulse940.tui.app\\nfi\\nexec /bin/sh -l\\n' > /usr/local/bin/pulse940-login",
                 "chmod +x /usr/local/bin/pulse940-login",
                 "if command -v systemctl >/dev/null 2>&1; then",
                 "  mv /tmp/pulse940.service /etc/systemd/system/pulse940.service",

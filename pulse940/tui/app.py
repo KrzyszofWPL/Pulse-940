@@ -138,10 +138,7 @@ def render_screen(
 
     lines.append("-" * 64)
     lines.append(
-        "[Vol+/Vol-] Brightness  [Power] Screen  [Hold Power 3s] Poweroff"
-    )
-    lines.append(
-        "[w/k] Up  [s/j] Down  [Enter] TX  [r] RF Scan  [p] Stealth  [t] Theme  [q] Shell"
+        "HW: [Vol+/Vol-] Brightness  [Power] Screen  [Hold Power 3s] Off"
     )
     lines.append(RESET)
     return "\n".join(lines)
