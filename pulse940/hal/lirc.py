@@ -82,6 +82,29 @@ def validate_pulses(
     return cleaned
 
 
+def fit_lirc_limits(
+    pulses_us: list[int],
+    max_pulses: int = 511,
+    max_duration_us: int = 900_000,
+) -> list[int]:
+    """Trim an odd LIRC pulse array to Linux LIRCBUF_SIZE & <=900ms TX duration."""
+    if not pulses_us:
+        return []
+    limit = max(1, max_pulses if max_pulses % 2 == 1 else max_pulses - 1)
+    trimmed = list(pulses_us[:limit])
+    if len(trimmed) % 2 == 0:
+        trimmed.pop()
+
+    total = sum(trimmed)
+    while len(trimmed) >= 3 and total > max_duration_us:
+        removed = trimmed.pop() + trimmed.pop()
+        total -= removed
+
+    if len(trimmed) == 1 and trimmed[0] > max_duration_us:
+        trimmed[0] = max(100, max_duration_us)
+    return trimmed
+
+
 class LircDevice(ABC):
     """Abstract base class for IR transmission backends."""
 
@@ -113,7 +136,7 @@ class NativeLircDevice(LircDevice):
     ) -> TxResult:
         # Safety cap: never drive the IR LED near 100% continuous DC.
         safe_duty = max(1, min(45, int(duty_cycle)))
-        cleaned = validate_pulses(pulses_us, carrier_hz, safe_duty)
+        cleaned = fit_lirc_limits(validate_pulses(pulses_us, carrier_hz, safe_duty))
         import fcntl
         import struct
 

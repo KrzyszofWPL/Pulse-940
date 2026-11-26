@@ -2,11 +2,14 @@
 
 from __future__ import annotations
 
+import logging
 import os
 import threading
 import time
 from dataclasses import asdict, dataclass
 from typing import Callable
+
+log = logging.getLogger("pulse940.ir.universal")
 
 from pulse940.hal.lirc import LircDevice, TxResult
 from pulse940.ir.flipper import IrSignal, load_ir_signals
@@ -48,6 +51,7 @@ class SweepStatus:
     current_protocol: str
     locked_signal: dict | None
     last_error: str | None
+    skipped: int = 0
 
 
 class UniversalLibrary:
@@ -146,6 +150,7 @@ class UniversalSweepEngine:
         self._last_signal: IrSignal | None = None
         self._locked_signal: dict | None = None
         self._last_error: str | None = None
+        self._skipped: int = 0
 
     def list_categories(self) -> dict[str, dict[str, int]]:
         return self.library.available_categories()
@@ -164,6 +169,7 @@ class UniversalSweepEngine:
                     current_protocol=self._current_protocol,
                     locked_signal=self._locked_signal,
                     last_error=self._last_error,
+                    skipped=self._skipped,
                 )
             )
 
@@ -228,6 +234,7 @@ class UniversalSweepEngine:
             self._current_label = queue[0].label or queue[0].name
             self._current_protocol = queue[0].protocol or queue[0].signal_type
             self._last_error = None
+            self._skipped = 0
 
         def _worker() -> None:
             try:
@@ -240,19 +247,28 @@ class UniversalSweepEngine:
                         self._current_protocol = sig.protocol or sig.signal_type
                         self._last_signal = sig
 
-                    res = self.lirc.send_raw(
-                        list(sig.pulses_us),
-                        carrier_hz=sig.carrier_hz,
-                        duty_cycle=min(40, sig.duty_cycle),
-                    )
-                    if self._on_tx is not None:
-                        self._on_tx(res)
+                    try:
+                        res = self.lirc.send_raw(
+                            list(sig.pulses_us),
+                            carrier_hz=sig.carrier_hz,
+                            duty_cycle=min(40, sig.duty_cycle),
+                        )
+                        if self._on_tx is not None:
+                            self._on_tx(res)
+                    except Exception as exc:
+                        log.warning(
+                            "Sweep signal %d/%d (%s) skipped: %s",
+                            idx,
+                            len(queue),
+                            sig.label or sig.name,
+                            exc,
+                        )
+                        with self._lock:
+                            self._skipped += 1
+                            self._last_error = str(exc)
 
                     if self._stop_event.wait(delay_s):
                         break
-            except Exception as exc:
-                with self._lock:
-                    self._last_error = str(exc)
             finally:
                 with self._lock:
                     self._active = False

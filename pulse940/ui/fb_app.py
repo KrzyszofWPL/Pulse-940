@@ -660,6 +660,11 @@ class ApplianceUI:
         if locked:
             lock_txt = f"LOCKED: {locked.get('protocol','')} {locked.get('label','')}"[:34].upper()
             lock_col = t.ok
+        elif not sw_meta.get("active") and sw_meta.get("total", 0) > 0 and sw_meta.get("index", 0) > 0:
+            skip_n = int(sw_meta.get("skipped", 0))
+            skip_s = f" SKIP:{skip_n}" if skip_n > 0 else ""
+            lock_txt = f"LAST SWEEP: {sw_meta.get('index')}/{sw_meta.get('total')}{skip_s}"
+            lock_col = t.ok if skip_n == 0 else t.warn
         else:
             lock_txt = "TARGET LOCK: NONE"
             lock_col = t.text_dim

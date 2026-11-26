@@ -8,7 +8,7 @@ import tempfile
 import time
 import unittest
 
-from pulse940.hal.lirc import MockLircDevice, validate_pulses
+from pulse940.hal.lirc import MockLircDevice, fit_lirc_limits, validate_pulses
 from pulse940.hal.power import PowerMonitor
 from pulse940.ir.flipper import load_ir_signals
 from pulse940.ir.protocols import SUPPORTED_PROTOCOLS, encode_flipper_protocol
@@ -97,6 +97,45 @@ class TestUniversalSweepModes(unittest.TestCase):
         sigs = lib.get_signals("projector", "Power", priority_brands=["Sony"])
         self.assertTrue(len(sigs) >= 20)
         self.assertIn(sigs[0].protocol, ("SIRC", "SIRC15", "SIRC20"))
+
+    def test_fit_lirc_limits_and_sweep_error_resilience(self) -> None:
+        lib = UniversalLibrary(base_dir=os.path.join("profiles", "universal"))
+        proj_sigs = lib.get_signals("projector", "Power")
+        # Verify real long captures in projector.ir fit within LIRC kernel bounds
+        for sig in proj_sigs:
+            fitted = fit_lirc_limits(list(sig.pulses_us))
+            self.assertLessEqual(len(fitted), 511)
+            self.assertLessEqual(sum(fitted), 900_000)
+            self.assertEqual(len(fitted) % 2, 1)
+
+        ac_sigs = load_ir_signals(os.path.join("profiles", "universal", "ac.ir"))
+        long_ac = [s for s in ac_sigs if len(s.pulses_us) > 512]
+        self.assertTrue(long_ac)
+        fitted_ac = fit_lirc_limits(list(long_ac[0].pulses_us))
+        self.assertEqual(len(fitted_ac), 511)
+        self.assertLessEqual(sum(fitted_ac), 900_000)
+
+        # Verify sweep skips individual TX errors and completes remaining signals
+        class _FlakyLirc(MockLircDevice):
+            def send_raw(self, pulses_us, carrier_hz=38000, duty_cycle=33):
+                if self.tx_count == 1:
+                    self.tx_count += 1
+                    raise OSError(22, "Invalid argument")
+                return super().send_raw(pulses_us, carrier_hz, duty_cycle)
+
+        flaky = _FlakyLirc()
+        eng = UniversalSweepEngine(lirc=flaky, library=lib)
+        eng.start_sweep(mode="quick", category="projector", action="Power", cooldown_ms=80)
+        for _ in range(40):
+            st = eng.get_status()
+            if not st["active"]:
+                break
+            time.sleep(0.1)
+        st = eng.get_status()
+        self.assertFalse(st["active"])
+        self.assertEqual(st["index"], 22)
+        self.assertEqual(st["total"], 22)
+        self.assertEqual(st["skipped"], 1)
 
 
 class TestRadarRoomSaveAndPrivacy(unittest.TestCase):
