@@ -5,6 +5,7 @@ from __future__ import annotations
 import os
 import struct
 import tempfile
+import time
 import unittest
 
 from pulse940.hal.backlight import BacklightController
@@ -16,6 +17,7 @@ from pulse940.hal.buttons import (
     PowerKeyStateMachine,
     parse_input_events,
 )
+from pulse940.hal.led import RgbLedController
 from pulse940.hal.lirc import MockLircDevice
 from pulse940.hal.power import PowerMonitor
 from pulse940.hal.touch import (
@@ -195,6 +197,42 @@ class TestPowerMonitorThermalAndGauge(unittest.TestCase):
         self.assertEqual(res["backlight"]["brightness"], 154)
         st = disp.handle({"cmd": "status"})
         self.assertIn("backlight", st)
+        self.assertIn("led", st)
+
+    def test_rgb_led_presets_pulse_and_stealth_off(self) -> None:
+        led = RgbLedController(default_color="white", force_mock=True)
+        self.assertEqual(led.backend, "mock_led")
+        self.assertEqual(led.get_state()["color"], "white")
+        self.assertEqual(led.get_state()["imax_ma"], 5)
+
+        led.pulse(duration_ms=40)
+        self.assertTrue(led.get_state()["lit"])
+        self.assertEqual(led.get_state()["pulse_count"], 1)
+        time.sleep(0.09)
+        self.assertFalse(led.get_state()["lit"])
+
+        nxt = led.cycle_color()
+        self.assertEqual(nxt["color"], "green")
+        led.off()
+
+        # Stealth off prevents pulses from lighting LED
+        led.set_color("off")
+        before = led.get_state()["pulse_count"]
+        led.pulse(duration_ms=40)
+        self.assertEqual(led.get_state()["pulse_count"], before)
+        self.assertFalse(led.get_state()["lit"])
+
+        disp = CommandDispatcher(
+            lirc=MockLircDevice(),
+            power=PowerMonitor("/nonexistent/ps", "/nonexistent/th"),
+            led=RgbLedController(default_color="white", force_mock=True),
+        )
+        res = disp.handle({"cmd": "led", "action": "set", "color": "green"})
+        self.assertTrue(res["ok"])
+        self.assertEqual(res["led"]["color"], "green")
+        disp.handle({"cmd": "tx_nec", "address": 4, "command": 8})
+        self.assertGreaterEqual(disp.led.get_state()["pulse_count"], 2)
+        disp.led.off()
 
 
 if __name__ == "__main__":

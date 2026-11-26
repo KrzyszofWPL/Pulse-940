@@ -417,6 +417,7 @@ class ApplianceUI:
 
     def _header_and_dock_buttons(self) -> list[RectButton]:
         return [
+            RectButton("led_cycle", "", 322, 22, 130, 68),
             RectButton("bl_down", "", 36, 140, 88, 56),
             RectButton("bl_slider", "", 140, 138, 440, 62),
             RectButton("bl_up", "", 596, 140, 88, 56),
@@ -820,8 +821,22 @@ class ApplianceUI:
         canvas.draw_rect_border(24, 12, self.width - 48, 88, t.border, thickness=2)
         canvas.draw_text(40, 22, "PULSE 940", t.accent, scale=3)
         lirc_ok = "NATIVE" in backend
-        sub = f"{'IR HW' if lirc_ok else backend[:8]} | {net_id or 'LAB'}"
+        sub = f"{'IR' if lirc_ok else backend[:4]} | {net_id or 'LAB'}"[:15]
         canvas.draw_text(40, 64, sub, t.ok if lirc_ok else t.warn, scale=2)
+
+        # LED Color Switcher Pill (x=322..452)
+        led_meta = status.get("led") or {}
+        led_color = str(led_meta.get("color", "white")).upper()
+        led_rgb_raw = led_meta.get("rgb") or [255, 255, 255]
+        led_rgb = (
+            (int(led_rgb_raw[0]), int(led_rgb_raw[1]), int(led_rgb_raw[2]))
+            if led_color != "OFF" and len(led_rgb_raw) == 3
+            else t.text_dim
+        )
+        canvas.fill_rect(322, 22, 130, 68, t.panel_alt)
+        canvas.draw_rect_border(322, 22, 130, 68, led_rgb, thickness=2)
+        canvas.draw_text_centered(387, 42, "LED", t.text_dim, scale=2)
+        canvas.draw_text_centered(387, 70, led_color[:6], led_rgb, scale=2)
 
         self._draw_battery_icon(canvas, 464, 24, pct, t)
         canvas.draw_text(528, 25, f"{pct:3d}%", t.text, scale=3)
@@ -1064,6 +1079,14 @@ class ApplianceUI:
             if btn.action == "theme":
                 th = self.cycle_theme()
                 self.feedback = f"THEME: {th.name}"
+                return True
+
+            if btn.action == "led_cycle":
+                res = rpc.call({"cmd": "led", "action": "cycle"})
+                if res.get("ok"):
+                    if self.status_data is not None:
+                        self.status_data["led"] = res["led"]
+                    self.feedback = f"LED: {str(res['led'].get('color', 'white')).upper()}"
                 return True
 
             if btn.action == "power_off":

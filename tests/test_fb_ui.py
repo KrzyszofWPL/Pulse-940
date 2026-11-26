@@ -93,6 +93,11 @@ class _FakeRpc:
             }
         if cmd == "save_room":
             return {"ok": True}
+        if cmd == "led":
+            return {
+                "ok": True,
+                "led": {"backend": "mock_led", "color": "green", "rgb": [0, 255, 0]},
+            }
         if cmd == "poweroff":
             return {"ok": True, "powering_off": True}
         return {"ok": True}
@@ -140,7 +145,9 @@ class TestFramebufferUI(unittest.TestCase):
         ui.signals = ["Power", "Freeze"]
         rpc = _FakeRpc()
 
-        # Brightness controls
+        # Brightness controls + header LED color pill
+        self.assertTrue(ui.handle_touch(TouchEvent("down", 380, 56), rpc, now=0.9))
+        self.assertEqual(rpc.calls[-1], {"cmd": "led", "action": "cycle"})
         self.assertTrue(ui.handle_touch(TouchEvent("down", 630, 168), rpc, now=1.0))
         self.assertEqual(rpc.calls[-1]["action"], "up")
         self.assertTrue(ui.handle_touch(TouchEvent("move", 360, 168), rpc, now=1.1))

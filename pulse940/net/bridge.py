@@ -10,6 +10,7 @@ from dataclasses import asdict
 from typing import Any, Callable
 
 from pulse940.hal.backlight import BacklightController
+from pulse940.hal.led import RgbLedController
 from pulse940.hal.lirc import LircDevice, TxResult
 from pulse940.hal.power import PowerMonitor
 from pulse940.ir.macros import IrMacroEngine
@@ -41,6 +42,7 @@ class CommandDispatcher:
         universal: UniversalSweepEngine | None = None,
         ble: BleScanner | None = None,
         rooms_save_path: str = "profiles/rooms.local.json",
+        led: RgbLedController | None = None,
     ) -> None:
         self.lirc = lirc
         self.power = power
@@ -49,6 +51,7 @@ class CommandDispatcher:
         self.ble = ble or BleScanner(force_mock=self.wifi.force_mock)
         self.rooms = rooms or []
         self.backlight = backlight or BacklightController()
+        self.led = led or RgbLedController(force_mock=True)
         self._on_poweroff = on_poweroff
         self.universal = universal or UniversalSweepEngine(
             lirc=lirc,
@@ -61,6 +64,7 @@ class CommandDispatcher:
 
     def _record_tx(self, res: TxResult) -> dict[str, Any]:
         self.last_tx = res
+        self.led.pulse(55)
         return {
             "ok": res.ok,
             "backend": res.backend,
@@ -92,6 +96,7 @@ class CommandDispatcher:
                 "sweep": self.universal.get_status(),
                 "privacy": get_privacy_status(),
                 "universal_categories": self.universal.list_categories(),
+                "led": self.led.get_state(),
             }
 
         if cmd == "last_tx":
@@ -187,6 +192,7 @@ class CommandDispatcher:
             if match is not None and bool(payload.get("auto_load", False)):
                 self.macros.load_profile(match.ir_profile)
                 auto_loaded = True
+            self.led.pulse(120)
             return {
                 "ok": True,
                 "source": source,
@@ -238,6 +244,24 @@ class CommandDispatcher:
 
         if cmd == "privacy_rotate":
             return {"ok": True, "privacy": rotate_identity()}
+
+        if cmd == "led":
+            action = str(payload.get("action", "get")).lower()
+            if action == "get":
+                return {"ok": True, "led": self.led.get_state()}
+            if action == "set":
+                return {"ok": True, "led": self.led.set_color(str(payload["color"]))}
+            if action == "cycle":
+                return {"ok": True, "led": self.led.cycle_color()}
+            if action == "pulse":
+                dur = int(payload.get("duration_ms", 120))
+                col = payload.get("color")
+                self.led.pulse(duration_ms=dur, color=str(col) if col is not None else None)
+                return {"ok": True, "led": self.led.get_state()}
+            if action == "off":
+                self.led.off()
+                return {"ok": True, "led": self.led.get_state()}
+            return {"ok": False, "error": f"Unknown led action: {action!r}"}
 
         if cmd == "backlight":
             action = str(payload.get("action", "get")).lower()

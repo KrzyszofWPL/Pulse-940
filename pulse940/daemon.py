@@ -12,6 +12,7 @@ import threading
 
 from pulse940.hal.backlight import BacklightController
 from pulse940.hal.buttons import EvdevButtonMonitor
+from pulse940.hal.led import RgbLedController
 from pulse940.hal.lirc import create_lirc_device
 from pulse940.hal.power import PowerMonitor
 from pulse940.ir.macros import IrMacroEngine
@@ -28,11 +29,18 @@ logging.basicConfig(
 log = logging.getLogger("pulse940.daemon")
 
 
-def _trigger_poweroff(backlight: BacklightController) -> None:
+def _trigger_poweroff(
+    backlight: BacklightController, led: RgbLedController | None = None
+) -> None:
     if sys.platform == "win32":
         log.info("Ignoring poweroff request on Windows")
         return
     log.warning("Executing system poweroff...")
+    if led is not None:
+        try:
+            led.off()
+        except Exception:
+            pass
     try:
         backlight.set_brightness(0)
     except Exception:
@@ -60,6 +68,7 @@ def main(argv: list[str] | None = None) -> int:
     lirc = create_lirc_device(force_mock=args.mock)
     power = PowerMonitor()
     backlight = BacklightController()
+    led = RgbLedController(default_color="white", force_mock=args.mock)
     macros = IrMacroEngine(lirc=lirc)
     if args.profile and os.path.isfile(args.profile):
         loaded = macros.load_profile(args.profile)
@@ -67,10 +76,15 @@ def main(argv: list[str] | None = None) -> int:
 
     wifi = WifiScanner(force_mock=args.mock)
     ble = BleScanner(force_mock=args.mock)
+
+    def _on_sweep_tx(res: object) -> None:
+        macros.last_tx = res  # type: ignore[assignment]
+        led.pulse(55)
+
     universal = UniversalSweepEngine(
         lirc=lirc,
         library=UniversalLibrary(),
-        on_tx=lambda res: setattr(macros, "last_tx", res),
+        on_tx=_on_sweep_tx,
     )
     rooms_file = find_default_rooms_file()
     rooms = load_room_profiles(rooms_file) if rooms_file else []
@@ -86,7 +100,8 @@ def main(argv: list[str] | None = None) -> int:
         rooms=rooms,
         backlight=backlight,
         universal=universal,
-        on_poweroff=lambda: _trigger_poweroff(backlight),
+        led=led,
+        on_poweroff=lambda: _trigger_poweroff(backlight, led),
     )
     server = BridgeServer(dispatcher=dispatcher, host=args.host, port=args.port)
 
@@ -108,7 +123,7 @@ def main(argv: list[str] | None = None) -> int:
 
     def _handle_power_long() -> None:
         log.warning("Power long press detected -> initiating system poweroff")
-        _trigger_poweroff(backlight)
+        _trigger_poweroff(backlight, led)
 
     buttons = EvdevButtonMonitor(
         on_vol_up=_handle_vol_up,
@@ -127,16 +142,20 @@ def main(argv: list[str] | None = None) -> int:
     signal.signal(signal.SIGTERM, _shutdown)
 
     log.info(
-        "Pulse 940 daemon ready | lirc=%s | backlight=%s | listen=%s:%d",
+        "Pulse 940 daemon ready | lirc=%s | backlight=%s | led=%s (%s) | listen=%s:%d",
         lirc.backend_name,
         backlight.get_state().backend,
+        led.backend,
+        led.get_state()["color"],
         args.host,
         server.port,
     )
+    led.pulse(160)
     buttons.start()
     server.start(background=True)
     stop_event.wait()
     buttons.stop()
+    led.off()
     server.stop()
     return 0
 
