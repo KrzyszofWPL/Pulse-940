@@ -71,7 +71,7 @@ The repository currently includes the **QEMU ARM64 (`aarch64`)** virtual machine
 ## Roadmap
 
 - [x] QEMU `aarch64` + stripped Alpine Linux 3.24 base environment
-- [ ] Hardware Abstraction Layer (`MockLircDevice` + TCP bridge)
+- [x] Hardware Abstraction Layer (`MockLircDevice` + TCP bridge)
 - [ ] Flipper-IRDB `.ir` parser & NEC/NECext 38 kHz encoder
 - [ ] Background daemon + JSON protocol (TCP / RFCOMM)
 - [ ] Passive Wi-Fi BSSID/RSSI fingerprinting & room profiles
