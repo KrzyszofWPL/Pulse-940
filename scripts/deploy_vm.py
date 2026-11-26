@@ -38,7 +38,7 @@ After=network.target systemd-udev-settle.service
 [Service]
 Type=simple
 WorkingDirectory=/opt/pulse940
-ExecStartPre=-/sbin/modprobe gpio-ir-tx
+ExecStartPre=-/bin/sh -c 'sleep 3; /sbin/modprobe -r gpio-ir-tx; /sbin/modprobe gpio-ir-tx'
 ExecStart=/usr/bin/python3 -m pulse940.daemon --port 9000
 Restart=always
 RestartSec=2
