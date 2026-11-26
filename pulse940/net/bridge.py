@@ -7,8 +7,9 @@ import socketserver
 import threading
 import time
 from dataclasses import asdict
-from typing import Any
+from typing import Any, Callable
 
+from pulse940.hal.backlight import BacklightController
 from pulse940.hal.lirc import LircDevice, TxResult
 from pulse940.hal.power import PowerMonitor
 from pulse940.ir.macros import IrMacroEngine
@@ -27,12 +28,16 @@ class CommandDispatcher:
         macros: IrMacroEngine | None = None,
         wifi: WifiScanner | None = None,
         rooms: list[RoomProfile] | None = None,
+        backlight: BacklightController | None = None,
+        on_poweroff: Callable[[], None] | None = None,
     ) -> None:
         self.lirc = lirc
         self.power = power
         self.macros = macros or IrMacroEngine(lirc=lirc)
         self.wifi = wifi or WifiScanner()
         self.rooms = rooms or []
+        self.backlight = backlight or BacklightController()
+        self._on_poweroff = on_poweroff
         self.started_at = time.time()
         self.last_tx: TxResult | None = None
         self._lock = threading.Lock()
@@ -61,6 +66,7 @@ class CommandDispatcher:
                 "lirc_backend": self.lirc.backend_name,
                 "uptime_s": round(time.time() - self.started_at, 2),
                 "power": asdict(pwr),
+                "backlight": asdict(self.backlight.get_state()),
                 "profile": self.macros.profile_name,
                 "signal_count": len(self.macros.signals),
                 "loop_signal": self.macros.loop_signal,
@@ -161,6 +167,30 @@ class CommandDispatcher:
                 "matched_room": asdict(match) if match else None,
                 "auto_loaded": auto_loaded,
             }
+
+        if cmd == "backlight":
+            action = str(payload.get("action", "get")).lower()
+            step_pct = int(payload.get("step_pct", 10))
+            if action == "get":
+                st = self.backlight.get_state()
+            elif action == "up":
+                st = self.backlight.step_up(step_pct=step_pct)
+            elif action == "down":
+                st = self.backlight.step_down(step_pct=step_pct)
+            elif action == "toggle":
+                st = self.backlight.toggle_blank()
+            elif action == "set":
+                st = self.backlight.set_brightness(int(payload["value"]))
+            else:
+                return {"ok": False, "error": f"Unknown backlight action: {action!r}"}
+            return {"ok": True, "backlight": asdict(st)}
+
+        if cmd == "poweroff":
+            if self._on_poweroff is not None:
+                t = threading.Timer(0.2, self._on_poweroff)
+                t.daemon = True
+                t.start()
+            return {"ok": True, "powering_off": True}
 
         return {"ok": False, "error": f"Unknown command: {cmd!r}"}
 

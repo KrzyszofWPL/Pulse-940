@@ -6,8 +6,12 @@ import argparse
 import logging
 import os
 import signal
+import subprocess
+import sys
 import threading
 
+from pulse940.hal.backlight import BacklightController
+from pulse940.hal.buttons import EvdevButtonMonitor
 from pulse940.hal.lirc import create_lirc_device
 from pulse940.hal.power import PowerMonitor
 from pulse940.ir.macros import IrMacroEngine
@@ -20,6 +24,23 @@ logging.basicConfig(
     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
 )
 log = logging.getLogger("pulse940.daemon")
+
+
+def _trigger_poweroff(backlight: BacklightController) -> None:
+    if sys.platform == "win32":
+        log.info("Ignoring poweroff request on Windows")
+        return
+    log.warning("Executing system poweroff...")
+    try:
+        backlight.set_brightness(0)
+    except Exception:
+        pass
+    for cmd in (["systemctl", "poweroff"], ["poweroff"]):
+        try:
+            subprocess.Popen(cmd)
+            return
+        except FileNotFoundError:
+            continue
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -36,6 +57,7 @@ def main(argv: list[str] | None = None) -> int:
 
     lirc = create_lirc_device(force_mock=args.mock)
     power = PowerMonitor()
+    backlight = BacklightController()
     macros = IrMacroEngine(lirc=lirc)
     if args.profile and os.path.isfile(args.profile):
         loaded = macros.load_profile(args.profile)
@@ -48,9 +70,22 @@ def main(argv: list[str] | None = None) -> int:
         log.info("Loaded %d room fingerprint(s) from %s", len(rooms), rooms_file)
 
     dispatcher = CommandDispatcher(
-        lirc=lirc, power=power, macros=macros, wifi=wifi, rooms=rooms
+        lirc=lirc,
+        power=power,
+        macros=macros,
+        wifi=wifi,
+        rooms=rooms,
+        backlight=backlight,
+        on_poweroff=lambda: _trigger_poweroff(backlight),
     )
     server = BridgeServer(dispatcher=dispatcher, host=args.host, port=args.port)
+
+    buttons = EvdevButtonMonitor(
+        on_vol_up=lambda: backlight.step_up(10),
+        on_vol_down=lambda: backlight.step_down(10),
+        on_power_short=lambda: backlight.toggle_blank(),
+        on_power_long=lambda: _trigger_poweroff(backlight),
+    )
 
     stop_event = threading.Event()
 
@@ -62,13 +97,16 @@ def main(argv: list[str] | None = None) -> int:
     signal.signal(signal.SIGTERM, _shutdown)
 
     log.info(
-        "Pulse 940 daemon ready | lirc=%s | listen=%s:%d",
+        "Pulse 940 daemon ready | lirc=%s | backlight=%s | listen=%s:%d",
         lirc.backend_name,
+        backlight.get_state().backend,
         args.host,
         server.port,
     )
+    buttons.start()
     server.start(background=True)
     stop_event.wait()
+    buttons.stop()
     server.stop()
     return 0
 

@@ -33,6 +33,12 @@ def main(argv: list[str] | None = None) -> int:
     rf_p = sub.add_parser("rf-scan")
     rf_p.add_argument("--auto-load", action="store_true", help="Auto-load matched room .ir")
 
+    bl_p = sub.add_parser("backlight")
+    bl_p.add_argument("action", choices=["get", "set", "up", "down", "toggle"])
+    bl_p.add_argument("value", nargs="?", type=int, default=128)
+
+    sub.add_parser("poweroff")
+
     tx_p = sub.add_parser("tx-raw")
     tx_p.add_argument("--carrier", type=int, default=38000)
     tx_p.add_argument("--duty", type=int, default=33)
@@ -76,6 +82,10 @@ def main(argv: list[str] | None = None) -> int:
         req = {"cmd": "list_signals"}
     elif args.command == "rf-scan":
         req = {"cmd": "rf_scan", "auto_load": args.auto_load}
+    elif args.command == "backlight":
+        req = {"cmd": "backlight", "action": args.action, "value": args.value}
+    elif args.command == "poweroff":
+        req = {"cmd": "poweroff"}
     elif args.command == "tx-raw":
         req = {
             "cmd": "tx_raw",

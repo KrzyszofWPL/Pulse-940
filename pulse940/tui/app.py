@@ -82,18 +82,28 @@ def render_screen(
     lines: list[str] = [CLEAR, fg]
 
     pwr = (status_data or {}).get("power", {})
+    bl = (status_data or {}).get("backlight", {})
     backend = (status_data or {}).get("lirc_backend", "offline")
     profile = (status_data or {}).get("profile") or "none"
     v_mv = pwr.get("voltage_mv", 0)
     c_ma = pwr.get("current_ma", 0)
     pct = pwr.get("capacity_pct", 0)
     temp = pwr.get("temp_c", 0.0)
+    bl_str = "OFF" if bl.get("blanked") else f"{bl.get('pct', 0)}%"
 
     lines.append(
         f"{BOLD}=== PULSE 940 // LAB APPLIANCE ==={RESET}{fg}  [{backend}]"
     )
+    pwr_parts = []
+    if v_mv > 0:
+        pwr_parts.append(f"{v_mv}mV")
+    if c_ma != 0:
+        pwr_parts.append(f"{c_ma}mA")
+    if pct > 0 or v_mv > 0:
+        pwr_parts.append(f"{pct}%")
+    pwr_parts.append(f"{temp:.1f}C")
     lines.append(
-        f"PWR: {v_mv}mV | {c_ma}mA | {pct}% | {temp:.1f}C   PROFILE: {profile}"
+        f"PWR: {' | '.join(pwr_parts)}   BL: {bl_str}   PROF: {profile}"
     )
     lines.append("-" * 64)
     lines.append(f"{BOLD}SIGNALS & MACROS:{RESET}{fg}")
@@ -127,6 +137,9 @@ def render_screen(
         lines.append(f"  {DIM}(waiting for events){RESET}{fg}")
 
     lines.append("-" * 64)
+    lines.append(
+        "[Vol+/Vol-] Brightness  [Power] Screen  [Hold Power 3s] Poweroff"
+    )
     lines.append(
         "[w/k] Up  [s/j] Down  [Enter] TX  [r] RF Scan  [p] Stealth  [t] Theme  [q] Shell"
     )

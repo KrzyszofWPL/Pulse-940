@@ -1,4 +1,4 @@
-"""Power supply & thermal telemetry via /sys/class/power_supply/ with mock fallback."""
+"""Power supply & thermal telemetry via /sys/class/power_supply/ with thermal & mock fallback."""
 
 from __future__ import annotations
 
@@ -34,11 +34,38 @@ def _read_str(path: str) -> str | None:
         return None
 
 
-class PowerMonitor:
-    """Reads real Linux sysfs power telemetry or returns simulated QEMU values."""
+def _read_thermal_temp_c(thermal_root: str = "/sys/class/thermal") -> float | None:
+    if not os.path.isdir(thermal_root):
+        return None
+    zones: dict[str, int] = {}
+    for entry in sorted(os.listdir(thermal_root)):
+        if not entry.startswith("thermal_zone"):
+            continue
+        zpath = os.path.join(thermal_root, entry)
+        ztype = _read_str(os.path.join(zpath, "type"))
+        ztemp = _read_int(os.path.join(zpath, "temp"))
+        if ztype and ztemp is not None:
+            zones[ztype] = ztemp
 
-    def __init__(self, sysfs_root: str = "/sys/class/power_supply") -> None:
+    for preferred in ("pm8937-thermal", "aoss-thermal", "cpu0-thermal"):
+        if preferred in zones:
+            return round(zones[preferred] / 1000.0, 1)
+    if zones:
+        first_val = next(iter(zones.values()))
+        return round(first_val / 1000.0, 1)
+    return None
+
+
+class PowerMonitor:
+    """Reads real Linux sysfs power telemetry or returns thermal/QEMU fallback."""
+
+    def __init__(
+        self,
+        sysfs_root: str = "/sys/class/power_supply",
+        thermal_root: str = "/sys/class/thermal",
+    ) -> None:
         self.sysfs_root = sysfs_root
+        self.thermal_root = thermal_root
 
     def _find_battery_dir(self) -> str | None:
         if not os.path.isdir(self.sysfs_root):
@@ -52,7 +79,18 @@ class PowerMonitor:
 
     def read(self) -> PowerTelemetry:
         bat_dir = self._find_battery_dir()
+        thermal_temp = _read_thermal_temp_c(self.thermal_root)
+
         if bat_dir is None:
+            if thermal_temp is not None:
+                return PowerTelemetry(
+                    source="thermal_only",
+                    voltage_mv=0,
+                    current_ma=0,
+                    capacity_pct=0,
+                    temp_c=thermal_temp,
+                    status="NoGauge",
+                )
             return PowerTelemetry(
                 source="mock_qemu",
                 voltage_mv=4120,
@@ -68,11 +106,18 @@ class PowerMonitor:
         temp_tenths = _read_int(os.path.join(bat_dir, "temp"))
         status = _read_str(os.path.join(bat_dir, "status")) or "Unknown"
 
+        if temp_tenths is not None:
+            temp_c = round(temp_tenths / 10.0, 1)
+        elif thermal_temp is not None:
+            temp_c = thermal_temp
+        else:
+            temp_c = 0.0
+
         return PowerTelemetry(
             source=os.path.basename(bat_dir),
             voltage_mv=voltage_uv // 1000,
             current_ma=current_ua // 1000,
             capacity_pct=capacity,
-            temp_c=(temp_tenths / 10.0) if temp_tenths is not None else 0.0,
+            temp_c=temp_c,
             status=status,
         )
