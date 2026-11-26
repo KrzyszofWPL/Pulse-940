@@ -33,11 +33,12 @@ depend() {
 
 SYSTEMD_UNIT = """[Unit]
 Description=Pulse 940 IR & RF Daemon
-After=network.target
+After=network.target systemd-udev-settle.service
 
 [Service]
 Type=simple
 WorkingDirectory=/opt/pulse940
+ExecStartPre=-/sbin/modprobe gpio-ir-tx
 ExecStart=/usr/bin/python3 -m pulse940.daemon --port 9000
 Restart=always
 RestartSec=2
