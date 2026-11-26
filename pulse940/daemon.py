@@ -15,7 +15,9 @@ from pulse940.hal.buttons import EvdevButtonMonitor
 from pulse940.hal.lirc import create_lirc_device
 from pulse940.hal.power import PowerMonitor
 from pulse940.ir.macros import IrMacroEngine
+from pulse940.ir.universal import UniversalLibrary, UniversalSweepEngine
 from pulse940.net.bridge import BridgeServer, CommandDispatcher
+from pulse940.rf.bluetooth import BleScanner
 from pulse940.rf.rooms import find_default_rooms_file, load_room_profiles
 from pulse940.rf.wifi import WifiScanner
 
@@ -64,6 +66,12 @@ def main(argv: list[str] | None = None) -> int:
         log.info("Loaded IR profile %s (%d signals)", args.profile, len(loaded))
 
     wifi = WifiScanner(force_mock=args.mock)
+    ble = BleScanner(force_mock=args.mock)
+    universal = UniversalSweepEngine(
+        lirc=lirc,
+        library=UniversalLibrary(),
+        on_tx=lambda res: setattr(macros, "last_tx", res),
+    )
     rooms_file = find_default_rooms_file()
     rooms = load_room_profiles(rooms_file) if rooms_file else []
     if rooms:
@@ -74,8 +82,10 @@ def main(argv: list[str] | None = None) -> int:
         power=power,
         macros=macros,
         wifi=wifi,
+        ble=ble,
         rooms=rooms,
         backlight=backlight,
+        universal=universal,
         on_poweroff=lambda: _trigger_poweroff(backlight),
     )
     server = BridgeServer(dispatcher=dispatcher, host=args.host, port=args.port)

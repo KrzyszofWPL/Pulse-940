@@ -111,7 +111,9 @@ class NativeLircDevice(LircDevice):
         carrier_hz: int = 38000,
         duty_cycle: int = 33,
     ) -> TxResult:
-        cleaned = validate_pulses(pulses_us, carrier_hz, duty_cycle)
+        # Safety cap: never drive the IR LED near 100% continuous DC.
+        safe_duty = max(1, min(45, int(duty_cycle)))
+        cleaned = validate_pulses(pulses_us, carrier_hz, safe_duty)
         import fcntl
         import struct
 
@@ -119,7 +121,7 @@ class NativeLircDevice(LircDevice):
         try:
             fcntl.ioctl(fd, LIRC_SET_SEND_MODE, struct.pack("I", LIRC_MODE_PULSE))
             fcntl.ioctl(fd, LIRC_SET_SEND_CARRIER, struct.pack("I", carrier_hz))
-            fcntl.ioctl(fd, LIRC_SET_SEND_DUTY_CYCLE, struct.pack("I", duty_cycle))
+            fcntl.ioctl(fd, LIRC_SET_SEND_DUTY_CYCLE, struct.pack("I", safe_duty))
             buf = array.array("I", cleaned)
             os.write(fd, buf.tobytes())
         finally:
@@ -129,7 +131,7 @@ class NativeLircDevice(LircDevice):
             ok=True,
             backend=self.backend_name,
             carrier_hz=carrier_hz,
-            duty_cycle=duty_cycle,
+            duty_cycle=safe_duty,
             pulse_count=len(cleaned),
             total_duration_us=sum(cleaned),
             pulses_us=tuple(cleaned),

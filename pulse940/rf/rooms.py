@@ -85,3 +85,41 @@ def find_default_rooms_file(base_dir: str = "profiles") -> str | None:
         if os.path.isfile(candidate):
             return candidate
     return None
+
+
+def save_room_profile(
+    path: str,
+    name: str,
+    ir_profile: str,
+    aps: list[WifiAp],
+    max_aps: int = 8,
+) -> RoomProfile:
+    """Persist top observed BSSID/RSSI APs for a room into a local JSON file."""
+    existing: list[RoomProfile] = []
+    if os.path.isfile(path):
+        try:
+            existing = load_room_profiles(path)
+        except Exception:
+            existing = []
+
+    top_aps = sorted(aps, key=lambda ap: ap.rssi_dbm, reverse=True)[: max(1, max_aps)]
+    bssids = {ap.bssid.lower(): ap.rssi_dbm for ap in top_aps}
+    new_room = RoomProfile(name=name, ir_profile=ir_profile, bssids=bssids)
+
+    updated = [r for r in existing if r.name.lower() != name.lower()]
+    updated.append(new_room)
+
+    os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
+    payload = {
+        "rooms": [
+            {
+                "name": r.name,
+                "ir_profile": r.ir_profile,
+                "bssids": r.bssids,
+            }
+            for r in updated
+        ]
+    }
+    with open(path, "w", encoding="utf-8") as fh:
+        json.dump(payload, fh, indent=2)
+    return new_room

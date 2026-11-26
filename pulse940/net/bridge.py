@@ -14,8 +14,16 @@ from pulse940.hal.lirc import LircDevice, TxResult
 from pulse940.hal.power import PowerMonitor
 from pulse940.ir.macros import IrMacroEngine
 from pulse940.ir.nec import NEC_CARRIER_HZ, NEC_DUTY_CYCLE, encode_nec, encode_necext
-from pulse940.rf.rooms import RoomProfile, match_room
-from pulse940.rf.wifi import WifiScanner, detect_brands
+from pulse940.ir.universal import UniversalSweepEngine
+from pulse940.net.privacy import get_privacy_status, rotate_identity
+from pulse940.rf.bluetooth import BleScanner, detect_brands_from_ble
+from pulse940.rf.rooms import (
+    RoomProfile,
+    load_room_profiles,
+    match_room,
+    save_room_profile,
+)
+from pulse940.rf.wifi import WifiScanner, detect_brands_from_aps
 
 
 class CommandDispatcher:
@@ -30,14 +38,23 @@ class CommandDispatcher:
         rooms: list[RoomProfile] | None = None,
         backlight: BacklightController | None = None,
         on_poweroff: Callable[[], None] | None = None,
+        universal: UniversalSweepEngine | None = None,
+        ble: BleScanner | None = None,
+        rooms_save_path: str = "profiles/rooms.local.json",
     ) -> None:
         self.lirc = lirc
         self.power = power
         self.macros = macros or IrMacroEngine(lirc=lirc)
         self.wifi = wifi or WifiScanner()
+        self.ble = ble or BleScanner(force_mock=self.wifi.force_mock)
         self.rooms = rooms or []
         self.backlight = backlight or BacklightController()
         self._on_poweroff = on_poweroff
+        self.universal = universal or UniversalSweepEngine(
+            lirc=lirc,
+            on_tx=lambda res: setattr(self.macros, "last_tx", res),
+        )
+        self.rooms_save_path = rooms_save_path
         self.started_at = time.time()
         self.last_tx: TxResult | None = None
         self._lock = threading.Lock()
@@ -72,6 +89,9 @@ class CommandDispatcher:
                 "loop_signal": self.macros.loop_signal,
                 "scheduled_signal": self.macros.scheduled_signal,
                 "has_last_tx": last is not None,
+                "sweep": self.universal.get_status(),
+                "privacy": get_privacy_status(),
+                "universal_categories": self.universal.list_categories(),
             }
 
         if cmd == "last_tx":
@@ -152,7 +172,16 @@ class CommandDispatcher:
 
         if cmd == "rf_scan":
             source, aps = self.wifi.scan()
-            brands = detect_brands([ap.ssid for ap in aps if ap.ssid])
+            wifi_brands = detect_brands_from_aps(aps)
+            include_ble = bool(payload.get("include_ble", True))
+            ble_source = "disabled"
+            ble_devs = []
+            ble_brands: list[str] = []
+            if include_ble:
+                ble_source, ble_devs = self.ble.scan(duration_s=3)
+                ble_brands = detect_brands_from_ble(ble_devs)
+
+            brands = list(dict.fromkeys(wifi_brands + ble_brands))
             match = match_room(aps, self.rooms)
             auto_loaded = False
             if match is not None and bool(payload.get("auto_load", False)):
@@ -161,12 +190,54 @@ class CommandDispatcher:
             return {
                 "ok": True,
                 "source": source,
+                "ble_source": ble_source,
                 "ap_count": len(aps),
+                "ble_count": len(ble_devs),
                 "aps": [asdict(ap) for ap in aps],
+                "ble_devices": [asdict(dev) for dev in ble_devs],
                 "brands": brands,
                 "matched_room": asdict(match) if match else None,
                 "auto_loaded": auto_loaded,
             }
+
+        if cmd == "save_room":
+            room_name = str(payload.get("name") or f"Room-{int(time.time()) % 10000}")
+            ir_profile = str(
+                payload.get("ir_profile")
+                or self.macros.profile_name
+                or "profiles/demo_projector.ir"
+            )
+            _, aps = self.wifi.scan()
+            saved = save_room_profile(self.rooms_save_path, room_name, ir_profile, aps)
+            self.rooms = load_room_profiles(self.rooms_save_path)
+            return {
+                "ok": True,
+                "room": asdict(saved),
+                "path": self.rooms_save_path,
+            }
+
+        if cmd == "sweep_start":
+            st = self.universal.start_sweep(
+                mode=str(payload.get("mode", "quick")),
+                category=str(payload.get("category", "projector")),
+                action=str(payload.get("action", "Power")),
+                priority_brands=payload.get("priority_brands"),
+                nec_address=int(payload.get("nec_address", 0x04)),
+                cooldown_ms=int(payload.get("cooldown_ms", 100)),
+            )
+            return {"ok": True, "sweep": st}
+
+        if cmd == "sweep_stop":
+            return {"ok": True, "sweep": self.universal.stop_sweep()}
+
+        if cmd == "sweep_lock":
+            return {"ok": True, "sweep": self.universal.lock_current()}
+
+        if cmd == "privacy_status":
+            return {"ok": True, "privacy": get_privacy_status()}
+
+        if cmd == "privacy_rotate":
+            return {"ok": True, "privacy": rotate_identity()}
 
         if cmd == "backlight":
             action = str(payload.get("action", "get")).lower()
@@ -251,6 +322,7 @@ class BridgeServer:
             self._server.serve_forever()
 
     def stop(self) -> None:
+        self.dispatcher.universal.stop_sweep()
         self.dispatcher.macros.stop_loop()
         self.dispatcher.macros.cancel_scheduled()
         self._server.shutdown()

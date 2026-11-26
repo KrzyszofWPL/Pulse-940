@@ -1,4 +1,4 @@
-"""Bare-metal /dev/fb0 capacitive touch laboratory UI for Pulse 940."""
+"""Bare-metal /dev/fb0 capacitive touch 3-tab laboratory UI for Pulse 940."""
 
 from __future__ import annotations
 
@@ -29,6 +29,20 @@ KD_GRAPHICS = 1
 
 NEC_IR_TEST_ADDR = 0x04
 NEC_IR_TEST_CMD = 0x08
+
+UNIVERSAL_CATEGORIES: list[tuple[str, str]] = [
+    ("projector", "PROJ"),
+    ("tv", "TV"),
+    ("audio", "AUDIO"),
+    ("ac", "AC"),
+]
+
+CATEGORY_ACTION_BUTTONS: dict[str, list[tuple[str, str]]] = {
+    "projector": [("Power", "POWER"), ("Mute", "MUTE"), ("Vol_up", "VOL+"), ("Vol_dn", "VOL-")],
+    "tv": [("Power", "POWER"), ("Mute", "MUTE"), ("Vol_up", "VOL+"), ("Vol_dn", "VOL-")],
+    "audio": [("Power", "POWER"), ("Mute", "MUTE"), ("Vol_up", "VOL+"), ("Vol_dn", "VOL-")],
+    "ac": [("Off", "OFF"), ("Cool_hi", "COOL"), ("Heat_hi", "HEAT"), ("Dh", "DRY")],
+}
 
 
 @dataclass(frozen=True)
@@ -347,7 +361,7 @@ class RpcClient:
         self.host = host
         self.port = port
 
-    def call(self, payload: dict, timeout: float = 1.8) -> dict:
+    def call(self, payload: dict, timeout: float = 2.0) -> dict:
         with socket.create_connection((self.host, self.port), timeout=timeout) as sock:
             sock.sendall((json.dumps(payload) + "\n").encode("utf-8"))
             buf = b""
@@ -368,22 +382,26 @@ def _read_sysfs_brightness() -> int | None:
 
 
 class ApplianceUI:
-    """Layout, hit-testing, state, and framebuffer renderer for Pulse 940."""
+    """3-Tab Flipper-class layout, hit-testing, state, and framebuffer renderer."""
 
     def __init__(self, width: int = 720, height: int = 1280) -> None:
         self.width = width
         self.height = height
         self.theme_idx = 0
+        self.tab = "universal"  # "universal" | "remote" | "radar"
+        self.category = "projector"
+        self.action = "Power"
+
         self.status_data: dict | None = None
         self.last_tx_data: dict | None = None
         self.signals: list[str] = []
-        self.feedback: str = "READY // TOUCH OR VOL+/-"
+        self.rf_data: dict | None = None
+        self.priority_brands: list[str] = []
+        self.feedback: str = "READY // SELECT UNIVERSAL OR RADAR"
         self.active_flash_key: str | None = None
         self.active_flash_until: float = 0.0
         self.poweroff_confirm_until: float = 0.0
-        self.buttons: list[RectButton] = []
-        self.slider_rect: tuple[int, int, int, int] = (146, 174, 428, 42)
-        self._build_static_layout()
+        self.slider_rect: tuple[int, int, int, int] = (140, 144, 440, 48)
 
     @property
     def theme(self) -> Theme:
@@ -393,42 +411,98 @@ class ApplianceUI:
         self.theme_idx = (self.theme_idx + 1) % len(THEMES)
         return self.theme
 
-    def _build_static_layout(self) -> None:
-        self._fixed_buttons: list[RectButton] = [
-            RectButton("bl_down", "", 36, 162, 92, 62),
-            RectButton("bl_slider", "", 146, 158, 428, 70),
-            RectButton("bl_up", "", 592, 162, 92, 62),
-            # 3 macro / RF quick action buttons
-            RectButton("macro_revert", "", 24, 948, 214, 96),
-            RectButton("macro_double", "", 253, 948, 214, 96),
-            RectButton("rf_scan", "", 482, 948, 214, 96),
-            # 4 bottom dock control buttons
+    def _is_sweeping(self) -> bool:
+        sw = (self.status_data or {}).get("sweep") or {}
+        return bool(sw.get("active", False))
+
+    def _header_and_dock_buttons(self) -> list[RectButton]:
+        return [
+            RectButton("bl_down", "", 36, 140, 88, 56),
+            RectButton("bl_slider", "", 140, 138, 440, 62),
+            RectButton("bl_up", "", 596, 140, 88, 56),
+            # 3 top tabs
+            RectButton("tab", "universal", 24, 222, 214, 58),
+            RectButton("tab", "remote", 253, 222, 214, 58),
+            RectButton("tab", "radar", 482, 222, 214, 58),
+            # 4 bottom dock buttons
             RectButton("screen_off", "", 24, 1146, 162, 106),
             RectButton("theme", "", 194, 1146, 162, 106),
-            RectButton("ir_test", "", 364, 1146, 162, 106),
+            RectButton(
+                "sweep_stop_or_test",
+                "",
+                364,
+                1146,
+                162,
+                106,
+            ),
             RectButton("power_off", "", 534, 1146, 162, 106),
         ]
 
-    def _signal_buttons(self) -> list[RectButton]:
+    def _tab_buttons(self) -> list[RectButton]:
         btns: list[RectButton] = []
-        cols = 2
-        rows = 4
-        start_x = 24
-        start_y = 472
-        gap = 14
-        card_w = (self.width - 48 - gap) // cols  # 329
-        card_h = 104
-        items = self.signals[: cols * rows]
-        for idx, sig in enumerate(items):
-            r = idx // cols
-            c = idx % cols
-            bx = start_x + c * (card_w + gap)
-            by = start_y + r * (card_h + gap)
-            btns.append(RectButton("tx_signal", sig, bx, by, card_w, card_h))
+        if self.tab == "universal":
+            for idx, (cat_key, _) in enumerate(UNIVERSAL_CATEGORIES):
+                btns.append(RectButton("cat", cat_key, 24 + idx * 171, 294, 158, 82))
+            acts = CATEGORY_ACTION_BUTTONS.get(
+                self.category, CATEGORY_ACTION_BUTTONS["projector"]
+            )
+            for idx, (act_key, _) in enumerate(acts):
+                btns.append(RectButton("u_act", act_key, 24 + idx * 171, 390, 158, 80))
+
+            btns.extend(
+                [
+                    RectButton("sweep", "quick", 24, 486, 672, 72),
+                    RectButton("sweep", "full", 24, 570, 672, 72),
+                    RectButton("sweep", "deep", 24, 654, 672, 72),
+                ]
+            )
+            if self._is_sweeping():
+                btns.append(RectButton("sweep_lock", "", 24, 742, 672, 108))
+            return btns
+
+        if self.tab == "remote":
+            cols = 2
+            rows = 4
+            gap = 14
+            card_w = (self.width - 48 - gap) // cols
+            card_h = 102
+            for idx, sig in enumerate(self.signals[: cols * rows]):
+                r = idx // cols
+                c = idx % cols
+                btns.append(
+                    RectButton(
+                        "tx_signal",
+                        sig,
+                        24 + c * (card_w + gap),
+                        486 + r * (card_h + gap),
+                        card_w,
+                        card_h,
+                    )
+                )
+            btns.extend(
+                [
+                    RectButton("macro_revert", "", 24, 954, 214, 92),
+                    RectButton("macro_double", "", 253, 954, 214, 92),
+                    RectButton("ir_test", "", 482, 954, 214, 92),
+                ]
+            )
+            return btns
+
+        # radar tab
+        btns.append(RectButton("rf_scan", "", 24, 294, 672, 86))
+        brands = ((self.rf_data or {}).get("brands") or [])[:4]
+        for idx, b in enumerate(brands):
+            col = idx % 2
+            row = idx // 2
+            btns.append(
+                RectButton("pick_brand", str(b), 40 + col * 324, 466 + row * 68, 308, 56)
+            )
+        btns.append(RectButton("save_room", "", 470, 728, 210, 72))
+        btns.append(RectButton("privacy_rotate", "", 470, 954, 210, 74))
         return btns
 
     def all_buttons(self) -> list[RectButton]:
-        return self._signal_buttons() + self._fixed_buttons
+        return self._tab_buttons() + self._header_and_dock_buttons()
 
     def hit_test(self, x: int, y: int) -> RectButton | None:
         for btn in self.all_buttons():
@@ -442,32 +516,20 @@ class ApplianceUI:
         return max(12, min(255, round(rel * 255)))
 
     def _draw_battery_icon(
-        self,
-        canvas: FramebufferCanvas,
-        x: int,
-        y: int,
-        pct: int,
-        t: Theme,
+        self, canvas: FramebufferCanvas, x: int, y: int, pct: int, t: Theme
     ) -> None:
         fill_col = t.ok if pct >= 35 else (t.warn if pct >= 15 else t.danger)
-        canvas.draw_rect_border(x, y, 52, 26, t.border, thickness=2)
-        canvas.fill_rect(x + 52, y + 7, 5, 12, t.border)
-        inner_w = max(0, min(44, round(44 * max(0, min(100, pct)) / 100)))
+        canvas.draw_rect_border(x, y, 48, 24, t.border, thickness=2)
+        canvas.fill_rect(x + 48, y + 6, 4, 12, t.border)
+        inner_w = max(0, min(40, round(40 * max(0, min(100, pct)) / 100)))
         if inner_w > 0:
-            canvas.fill_rect(x + 4, y + 4, inner_w, 18, fill_col)
+            canvas.fill_rect(x + 4, y + 4, inner_w, 16, fill_col)
 
     def _draw_waveform_box(
-        self,
-        canvas: FramebufferCanvas,
-        x: int,
-        y: int,
-        w: int,
-        h: int,
-        t: Theme,
+        self, canvas: FramebufferCanvas, x: int, y: int, w: int, h: int, t: Theme
     ) -> None:
         canvas.fill_rect(x, y, w, h, t.panel)
         canvas.draw_rect_border(x, y, w, h, t.border, thickness=2)
-
         tx = self.last_tx_data
         if tx:
             freq = tx.get("carrier_hz", 38000)
@@ -477,39 +539,33 @@ class ApplianceUI:
             header = f"PWM {freq // 1000}KHz {duty}% | {cnt}P {dur:.1f}ms"
         else:
             header = "PWM OSCILLOSCOPE // IDLE"
-        canvas.draw_text(x + 16, y + 14, header, t.accent, scale=2)
+        canvas.draw_text(x + 16, y + 12, header, t.accent, scale=2)
 
-        gx, gy, gw, gh = x + 16, y + 46, w - 32, h - 62
+        gx, gy, gw, gh = x + 16, y + 42, w - 32, h - 56
         canvas.fill_rect(gx, gy, gw, gh, t.bg)
         canvas.draw_rect_border(gx, gy, gw, gh, t.border, thickness=1)
-
-        # Subtle reference center & 25%/75% grid lines
         for frac in (0.25, 0.5, 0.75):
-            ly = gy + int(gh * frac)
-            canvas.fill_rect(gx + 1, ly, gw - 2, 1, t.panel)
+            canvas.fill_rect(gx + 1, gy + int(gh * frac), gw - 2, 1, t.panel)
 
         pulses = (tx or {}).get("pulses_us") or []
         if not pulses:
             canvas.draw_text_centered(
-                gx + gw // 2, gy + gh // 2, "NO RECENT TRANSMISSION", t.text_dim, scale=2
+                gx + gw // 2, gy + gh // 2, "NO RECENT TX", t.text_dim, scale=2
             )
             return
 
-        hi_y = gy + 18
-        lo_y = gy + gh - 22
+        hi_y = gy + 14
+        lo_y = gy + gh - 18
         total = max(1, sum(pulses))
         cur_t = 0
-        prev_level_y = lo_y
+        prev_y = lo_y
         prev_px = gx + 4
         plot_w = gw - 8
-
         for idx, dur in enumerate(pulses):
             level_y = hi_y if idx % 2 == 0 else lo_y
-            # Vertical transition edge
-            if idx > 0 and level_y != prev_level_y:
-                top = min(prev_level_y, level_y)
-                canvas.fill_rect(prev_px, top, 2, abs(level_y - prev_level_y) + 2, t.accent)
-
+            if idx > 0 and level_y != prev_y:
+                top = min(prev_y, level_y)
+                canvas.fill_rect(prev_px, top, 2, abs(level_y - prev_y) + 2, t.accent)
             cur_t += dur
             end_px = gx + 4 + min(plot_w, round((cur_t / total) * plot_w))
             seg_w = max(2, end_px - prev_px)
@@ -517,7 +573,224 @@ class ApplianceUI:
             if idx % 2 == 0:
                 canvas.fill_rect(prev_px, level_y + 3, seg_w, lo_y - level_y - 3, t.accent_dim)
             prev_px = max(prev_px, end_px)
-            prev_level_y = level_y
+            prev_y = level_y
+
+    def _render_universal_tab(self, canvas: FramebufferCanvas, t: Theme, now: float) -> None:
+        # 1. Category strip
+        for idx, (cat_key, label) in enumerate(UNIVERSAL_CATEGORIES):
+            bx = 24 + idx * 171
+            selected = self.category == cat_key
+            canvas.fill_rect(bx, 294, 158, 82, t.accent if selected else t.panel)
+            canvas.draw_rect_border(
+                bx, 294, 158, 82, t.accent if selected else t.border, thickness=2
+            )
+            canvas.draw_text_centered(
+                bx + 79, 335, label, t.bg if selected else t.text, scale=2
+            )
+
+        # 2. Action strip
+        acts = CATEGORY_ACTION_BUTTONS.get(
+            self.category, CATEGORY_ACTION_BUTTONS["projector"]
+        )
+        for idx, (act_key, label) in enumerate(acts):
+            bx = 24 + idx * 171
+            selected = self.action.lower() == act_key.lower()
+            canvas.fill_rect(bx, 390, 158, 80, t.panel_alt if selected else t.panel)
+            canvas.draw_rect_border(
+                bx, 390, 158, 80, t.accent if selected else t.border, thickness=2
+            )
+            canvas.draw_text_centered(
+                bx + 79, 430, label, t.accent if selected else t.text, scale=2
+            )
+
+        # 3. 3-Mode Universal Sweep buttons (3-4s / 10-16s / 40-55s)
+        cats_meta = ((self.status_data or {}).get("universal_categories") or {}).get(
+            self.category, {}
+        )
+        act_cnt = ((cats_meta.get("actions") or {}).get(self.action)) or 0
+        quick_cnt = min(22, act_cnt) if act_cnt else 22
+        full_est = f"~{max(4, round(act_cnt * 0.16))}S ({act_cnt} CODES)" if act_cnt else "ALL BRANDS"
+
+        sw_meta = (self.status_data or {}).get("sweep") or {}
+        active_mode = sw_meta.get("mode", "") if sw_meta.get("active") else ""
+        modes = [
+            ("quick", "QUICK SWEEP", f"3-4S  | TOP {quick_cnt} BRANDS", 486),
+            ("full", "FULL SWEEP", f"10-16S+ | {full_est}", 570),
+            ("deep", "DEEP NEC 256", "40-55S | EXHAUSTIVE 0x00-0xFF", 654),
+        ]
+        for mkey, title, sub, by in modes:
+            is_running = active_mode == mkey
+            bg = t.accent if is_running else t.panel_alt
+            bd = t.accent if is_running else t.border
+            fg = t.bg if is_running else t.accent
+            fg_sub = t.bg if is_running else t.text_dim
+            canvas.fill_rect(24, by, 672, 72, bg)
+            canvas.draw_rect_border(24, by, 672, 72, bd, thickness=2)
+            canvas.draw_text(44, by + 16, title, fg, scale=2)
+            canvas.draw_text(44, by + 44, sub, fg_sub, scale=2)
+
+        # 4. Live Sweep Monitor OR Oscilloscope
+        if sw_meta.get("active"):
+            canvas.fill_rect(24, 742, 672, 108, t.danger)
+            canvas.draw_rect_border(24, 742, 672, 108, t.text, thickness=3)
+            canvas.draw_text_centered(360, 782, "STOP & LOCK SIGNAL", t.text, scale=3)
+            canvas.draw_text_centered(
+                360, 824, "TAP IMMEDIATELY WHEN DEVICE REACTS", t.text, scale=1
+            )
+
+            idx_n = int(sw_meta.get("index", 0))
+            tot_n = max(1, int(sw_meta.get("total", 1)))
+            proto = str(sw_meta.get("current_protocol", "")).upper()
+            lbl = str(sw_meta.get("current_label", ""))[:18].upper()
+            canvas.fill_rect(24, 862, 672, 54, t.panel)
+            canvas.draw_rect_border(24, 862, 672, 54, t.accent, thickness=2)
+            fill_w = max(4, round(664 * min(idx_n, tot_n) / tot_n))
+            canvas.fill_rect(28, 866, fill_w, 46, t.accent_dim)
+            canvas.draw_text(
+                40, 881, f"{idx_n}/{tot_n}  {proto}  {lbl}", t.text, scale=2
+            )
+        else:
+            self._draw_waveform_box(canvas, 24, 742, 672, 174, t)
+
+        # 5. Radar Priority & Locked Signal Summary Card
+        canvas.fill_rect(24, 930, 672, 116, t.panel)
+        canvas.draw_rect_border(24, 930, 672, 116, t.border, thickness=2)
+        prio = ", ".join(self.priority_brands[:4]).upper() or "NONE (TAP RADAR)"
+        locked = sw_meta.get("locked_signal")
+        if locked:
+            lock_txt = f"LOCKED: {locked.get('protocol','')} {locked.get('label','')}"[:34].upper()
+            lock_col = t.ok
+        else:
+            lock_txt = "TARGET LOCK: NONE"
+            lock_col = t.text_dim
+        canvas.draw_text(40, 948, f"PRIORITY BRANDS: {prio}"[:35], t.accent, scale=2)
+        canvas.draw_text(40, 986, lock_txt, lock_col, scale=2)
+
+    def _render_remote_tab(self, canvas: FramebufferCanvas, t: Theme, now: float) -> None:
+        self._draw_waveform_box(canvas, 24, 294, 672, 176, t)
+        gap = 14
+        card_w = (self.width - 48 - gap) // 2
+        card_h = 102
+        items = self.signals[:8]
+        if not items:
+            canvas.fill_rect(24, 486, 672, 450, t.panel)
+            canvas.draw_rect_border(24, 486, 672, 450, t.border, thickness=2)
+            canvas.draw_text_centered(360, 710, "NO PROFILE SIGNALS", t.text_dim, scale=2)
+        else:
+            for idx, sig in enumerate(items):
+                r = idx // 2
+                c = idx % 2
+                bx = 24 + c * (card_w + gap)
+                by = 486 + r * (card_h + gap)
+                flashing = self.active_flash_key == f"sig:{sig}" and now < self.active_flash_until
+                canvas.fill_rect(bx, by, card_w, card_h, t.accent if flashing else t.panel)
+                canvas.draw_rect_border(
+                    bx, by, card_w, card_h, t.accent if flashing else t.border, thickness=2
+                )
+                canvas.draw_text_centered(
+                    bx + card_w // 2,
+                    by + 42,
+                    sig.upper().replace("_", " ")[:15],
+                    t.bg if flashing else t.text,
+                    scale=2,
+                )
+                canvas.draw_text_centered(
+                    bx + card_w // 2,
+                    by + 80,
+                    "TAP TO TX",
+                    t.bg if flashing else t.accent_dim,
+                    scale=1,
+                )
+
+        macros = [
+            ("macro_revert", "REVERT", "HDMI 1", 24),
+            ("macro_double", "2X PWR", "SHUTDOWN", 253),
+            ("ir_test", "IR TEST", "38KHZ BURST", 482),
+        ]
+        for action, title, sub, bx in macros:
+            flashing = self.active_flash_key == action and now < self.active_flash_until
+            canvas.fill_rect(bx, 954, 214, 92, t.accent if flashing else t.panel_alt)
+            canvas.draw_rect_border(bx, 954, 214, 92, t.accent_dim, thickness=2)
+            canvas.draw_text_centered(bx + 107, 988, title, t.bg if flashing else t.accent, scale=2)
+            canvas.draw_text_centered(
+                bx + 107, 1022, sub, t.bg if flashing else t.text_dim, scale=1
+            )
+
+    def _render_radar_tab(self, canvas: FramebufferCanvas, t: Theme, now: float) -> None:
+        # 1. Scan button
+        flashing = self.active_flash_key == "rf_scan" and now < self.active_flash_until
+        canvas.fill_rect(24, 294, 672, 86, t.accent if flashing else t.panel_alt)
+        canvas.draw_rect_border(24, 294, 672, 86, t.accent, thickness=2)
+        canvas.draw_text_centered(
+            360, 337, "PASSIVE WIFI + BLE SCAN", t.bg if flashing else t.accent, scale=3
+        )
+
+        # 2. Detected Brands box
+        canvas.fill_rect(24, 396, 672, 214, t.panel)
+        canvas.draw_rect_border(24, 396, 672, 214, t.border, thickness=2)
+        rf = self.rf_data or {}
+        ap_n = rf.get("ap_count", 0)
+        ble_n = rf.get("ble_count", 0)
+        canvas.draw_text(
+            40, 414, f"RADAR: {ap_n} WIFI AP | {ble_n} BLE DEVICES", t.accent, scale=2
+        )
+        brands = (rf.get("brands") or [])[:4]
+        if not brands:
+            canvas.draw_text_centered(
+                360, 524, "TAP SCAN TO DETECT NEARBY AV BRANDS", t.text_dim, scale=2
+            )
+        else:
+            for idx, b in enumerate(brands):
+                col = idx % 2
+                row = idx // 2
+                bx, by = 40 + col * 324, 466 + row * 68
+                prio = b in self.priority_brands
+                canvas.fill_rect(bx, by, 308, 56, t.accent if prio else t.panel_alt)
+                canvas.draw_rect_border(bx, by, 308, 56, t.accent_dim, thickness=2)
+                canvas.draw_text_centered(
+                    bx + 154,
+                    by + 28,
+                    f"{'* ' if prio else ''}{str(b).upper()[:14]}",
+                    t.bg if prio else t.text,
+                    scale=2,
+                )
+
+        # 3. Room Match + SAVE ROOM
+        canvas.fill_rect(24, 624, 672, 192, t.panel)
+        canvas.draw_rect_border(24, 624, 672, 192, t.border, thickness=2)
+        room = ((rf.get("matched_room") or {}).get("room_name")) or "UNMATCHED"
+        aps = rf.get("aps") or []
+        top_ssid = (aps[0].get("ssid") or aps[0].get("bssid", ""))[:22] if aps else "NO SCAN YET"
+        canvas.draw_text(40, 642, f"ROOM: {str(room).upper()[:24]}", t.ok if room != "UNMATCHED" else t.text, scale=2)
+        canvas.draw_text(40, 682, f"STRONGEST: {str(top_ssid).upper()}", t.text_dim, scale=2)
+        canvas.fill_rect(470, 728, 210, 72, t.panel_alt)
+        canvas.draw_rect_border(470, 728, 210, 72, t.accent_dim, thickness=2)
+        canvas.draw_text_centered(575, 764, "SAVE ROOM", t.accent, scale=2)
+
+        # 4. Privacy Shield Card
+        priv = (self.status_data or {}).get("privacy") or {}
+        host_id = str(priv.get("hostname", "UNKNOWN")).upper()[:16]
+        wmac = str(priv.get("wlan_mac", "--:--")).upper()
+        stealth_ok = bool(priv.get("stealth_ok", False))
+        mdns_txt = "OFF" if not priv.get("avahi_active", True) else "ON!"
+        bt_txt = "HIDDEN" if not priv.get("bt_discoverable", True) else "VISIBLE!"
+        canvas.fill_rect(24, 830, 672, 216, t.panel)
+        canvas.draw_rect_border(
+            24, 830, 672, 216, t.ok if stealth_ok else t.warn, thickness=2
+        )
+        canvas.draw_text(
+            40,
+            848,
+            f"PRIVACY SHIELD: {'ACTIVE' if stealth_ok else 'HARDENING'}",
+            t.ok if stealth_ok else t.warn,
+            scale=2,
+        )
+        canvas.draw_text(40, 886, f"NET ID: {host_id}", t.text, scale=2)
+        canvas.draw_text(40, 920, f"MAC: {wmac}", t.text_dim, scale=2)
+        canvas.draw_text(40, 962, f"MDNS:{mdns_txt}  BT:{bt_txt}", t.text_dim, scale=2)
+        canvas.fill_rect(470, 954, 210, 74, t.panel_alt)
+        canvas.draw_rect_border(470, 954, 210, 74, t.accent, thickness=2)
+        canvas.draw_text_centered(575, 991, "ROTATE ID", t.accent, scale=2)
 
     def render(self, canvas: FramebufferCanvas, now: float | None = None) -> None:
         if now is None:
@@ -528,39 +801,36 @@ class ApplianceUI:
         status = self.status_data or {}
         pwr = status.get("power", {})
         bl = status.get("backlight", {})
+        priv = status.get("privacy", {})
         backend = str(status.get("lirc_backend", "OFFLINE")).upper()
         pct = int(pwr.get("capacity_pct", 0))
         mv = int(pwr.get("voltage_mv", 0))
         temp = float(pwr.get("temp_c", 0.0))
         bl_pct = int(bl.get("pct", 50))
         bl_blanked = bool(bl.get("blanked", False))
+        net_id = str(priv.get("hostname", "")).upper()[:12]
 
-        # 1. Top Header Bar (y=16..114)
-        canvas.fill_rect(24, 16, self.width - 48, 98, t.panel)
-        canvas.draw_rect_border(24, 16, self.width - 48, 98, t.border, thickness=2)
-        canvas.draw_text(42, 32, "PULSE 940", t.accent, scale=3)
-
+        # 1. Header Bar (y=12..100)
+        canvas.fill_rect(24, 12, self.width - 48, 88, t.panel)
+        canvas.draw_rect_border(24, 12, self.width - 48, 88, t.border, thickness=2)
+        canvas.draw_text(40, 22, "PULSE 940", t.accent, scale=3)
         lirc_ok = "NATIVE" in backend
-        badge_col = t.ok if lirc_ok else t.warn
-        badge_txt = "IR HARDWARE" if lirc_ok else backend[:11]
-        canvas.draw_text(42, 74, badge_txt, badge_col, scale=2)
+        sub = f"{'IR HW' if lirc_ok else backend[:8]} | {net_id or 'LAB'}"
+        canvas.draw_text(40, 64, sub, t.ok if lirc_ok else t.warn, scale=2)
 
-        # Battery Telemetry (right side of header)
-        self._draw_battery_icon(canvas, 456, 32, pct, t)
-        canvas.draw_text(526, 33, f"{pct:3d}%", t.text, scale=3)
-        canvas.draw_text(456, 74, f"{mv}mV  {temp:.1f}C", t.text_dim, scale=2)
+        self._draw_battery_icon(canvas, 464, 24, pct, t)
+        canvas.draw_text(528, 25, f"{pct:3d}%", t.text, scale=3)
+        canvas.draw_text(464, 64, f"{mv}mV {temp:.1f}C", t.text_dim, scale=2)
 
-        # 2. Brightness Control Card (y=128..236)
-        canvas.fill_rect(24, 128, self.width - 48, 108, t.panel)
-        canvas.draw_rect_border(24, 128, self.width - 48, 108, t.border, thickness=2)
-        canvas.draw_text(42, 138, f"DISPLAY BRIGHTNESS: {bl_pct}%", t.text_dim, scale=2)
+        # 2. Brightness Control Card (y=112..210)
+        canvas.fill_rect(24, 112, self.width - 48, 98, t.panel)
+        canvas.draw_rect_border(24, 112, self.width - 48, 98, t.border, thickness=2)
+        canvas.draw_text(40, 120, f"BRIGHTNESS: {bl_pct}%", t.text_dim, scale=1)
 
-        # Minus button (36, 162, 92, 62)
-        canvas.fill_rect(36, 162, 92, 62, t.panel_alt)
-        canvas.draw_rect_border(36, 162, 92, 62, t.accent_dim, thickness=2)
-        canvas.draw_text_centered(82, 193, "-", t.accent, scale=4)
+        canvas.fill_rect(36, 140, 88, 56, t.panel_alt)
+        canvas.draw_rect_border(36, 140, 88, 56, t.accent_dim, thickness=2)
+        canvas.draw_text_centered(80, 168, "-", t.accent, scale=4)
 
-        # Slider bar
         sx, sy, sw, sh = self.slider_rect
         canvas.fill_rect(sx, sy, sw, sh, t.bg)
         canvas.draw_rect_border(sx, sy, sw, sh, t.border, thickness=2)
@@ -569,74 +839,48 @@ class ApplianceUI:
         if fill_w > 0:
             canvas.fill_rect(sx + 4, sy + 4, fill_w, sh - 8, t.accent)
 
-        # Plus button (592, 162, 92, 62)
-        canvas.fill_rect(592, 162, 92, 62, t.panel_alt)
-        canvas.draw_rect_border(592, 162, 92, 62, t.accent_dim, thickness=2)
-        canvas.draw_text_centered(638, 193, "+", t.accent, scale=4)
+        canvas.fill_rect(596, 140, 88, 56, t.panel_alt)
+        canvas.draw_rect_border(596, 140, 88, 56, t.accent_dim, thickness=2)
+        canvas.draw_text_centered(640, 168, "+", t.accent, scale=4)
 
-        # 3. Live PWM Oscilloscope (y=250..446)
-        self._draw_waveform_box(canvas, 24, 250, self.width - 48, 196, t)
-
-        # 4. IR Signals Touch Grid (y=462..934)
-        sig_btns = self._signal_buttons()
-        if not sig_btns:
-            canvas.fill_rect(24, 472, self.width - 48, 456, t.panel)
-            canvas.draw_rect_border(24, 472, self.width - 48, 456, t.border, thickness=2)
+        # 3. Top Navigation Tabs (y=222..280)
+        tab_specs = [("universal", "UNIVERSAL", 24), ("remote", "REMOTE", 253), ("radar", "RADAR", 482)]
+        for tkey, tlabel, tx in tab_specs:
+            active = self.tab == tkey
+            canvas.fill_rect(tx, 222, 214, 58, t.accent if active else t.panel)
+            canvas.draw_rect_border(tx, 222, 214, 58, t.accent if active else t.border, thickness=2)
             canvas.draw_text_centered(
-                self.width // 2, 700, "WAITING FOR IR PROFILE...", t.text_dim, scale=2
+                tx + 107, 251, tlabel, t.bg if active else t.text, scale=2
             )
+
+        # 4. Active Tab Content
+        if self.tab == "universal":
+            self._render_universal_tab(canvas, t, now)
+        elif self.tab == "remote":
+            self._render_remote_tab(canvas, t, now)
         else:
-            for btn in sig_btns:
-                is_flashing = (
-                    self.active_flash_key == f"sig:{btn.arg}"
-                    and now < self.active_flash_until
-                )
-                bg_col = t.accent if is_flashing else t.panel
-                fg_col = t.bg if is_flashing else t.text
-                bd_col = t.accent if is_flashing else t.border
-                canvas.fill_rect(btn.x, btn.y, btn.w, btn.h, bg_col)
-                canvas.draw_rect_border(btn.x, btn.y, btn.w, btn.h, bd_col, thickness=2)
-                label = btn.arg.upper().replace("_", " ")[:15]
-                canvas.draw_text_centered(
-                    btn.x + btn.w // 2, btn.y + btn.h // 2 - 8, label, fg_col, scale=2
-                )
-                sub_col = t.bg if is_flashing else t.accent_dim
-                canvas.draw_text_centered(
-                    btn.x + btn.w // 2, btn.y + btn.h - 22, "TAP TO TX", sub_col, scale=1
-                )
+            self._render_radar_tab(canvas, t, now)
 
-        # 5. Quick Actions Row (y=948..1044)
-        macro_specs = [
-            ("macro_revert", "REVERT", "HDMI 1", 24),
-            ("macro_double", "2X PWR", "SHUTDOWN", 253),
-            ("rf_scan", "RF SCAN", "WIFI ROOM", 482),
-        ]
-        for action, title, sub, bx in macro_specs:
-            is_flashing = (
-                self.active_flash_key == action and now < self.active_flash_until
-            )
-            bg_col = t.accent if is_flashing else t.panel_alt
-            fg_col = t.bg if is_flashing else t.accent
-            canvas.fill_rect(bx, 948, 214, 96, bg_col)
-            canvas.draw_rect_border(bx, 948, 214, 96, t.accent_dim, thickness=2)
-            canvas.draw_text_centered(bx + 107, 984, title, fg_col, scale=2)
-            canvas.draw_text_centered(
-                bx + 107, 1018, sub, t.bg if is_flashing else t.text_dim, scale=1
-            )
+        # 5. Status Bar (y=1062..1130)
+        canvas.fill_rect(24, 1062, 672, 68, t.panel)
+        canvas.draw_rect_border(24, 1062, 672, 68, t.border, thickness=2)
+        canvas.draw_text(40, 1088, self.feedback[:36], t.text, scale=2)
 
-        # 6. Status Ticker Bar (y=1060..1128)
-        canvas.fill_rect(24, 1060, self.width - 48, 68, t.panel)
-        canvas.draw_rect_border(24, 1060, self.width - 48, 68, t.border, thickness=2)
-        canvas.draw_text(40, 1086, self.feedback[:36], t.text, scale=2)
-
-        # 7. Bottom Hardware Dock (y=1146..1252)
+        # 6. Bottom Control Dock (y=1146..1252)
+        sweeping = self._is_sweeping()
         pwr_confirm = now < self.poweroff_confirm_until
         dock_specs = [
-            ("screen_off", "SCREEN", "OFF", 24, t.panel, t.border, t.text),
-            ("theme", "THEME", t.name[:8], 194, t.panel, t.border, t.accent),
-            ("ir_test", "IR LED", "TEST TX", 364, t.panel_alt, t.accent_dim, t.ok),
+            ("SCREEN", "OFF", 24, t.panel, t.border, t.text),
+            ("THEME", t.name[:8], 194, t.panel, t.border, t.accent),
             (
-                "power_off",
+                "STOP" if sweeping else "IR LED",
+                "SWEEP" if sweeping else "TEST TX",
+                364,
+                t.danger if sweeping else t.panel_alt,
+                t.danger if sweeping else t.accent_dim,
+                t.text if sweeping else t.ok,
+            ),
+            (
                 "CONFIRM" if pwr_confirm else "POWER",
                 "TAP NOW" if pwr_confirm else "OFF",
                 534,
@@ -645,7 +889,7 @@ class ApplianceUI:
                 t.text if pwr_confirm else t.danger,
             ),
         ]
-        for _, l1, l2, bx, bg_c, bd_c, fg_c in dock_specs:
+        for l1, l2, bx, bg_c, bd_c, fg_c in dock_specs:
             canvas.fill_rect(bx, 1146, 162, 106, bg_c)
             canvas.draw_rect_border(bx, 1146, 162, 106, bd_c, thickness=2)
             canvas.draw_text_centered(bx + 81, 1184, l1, fg_c, scale=2)
@@ -661,8 +905,6 @@ class ApplianceUI:
         btn = self.hit_test(ev.x, ev.y)
         if btn is None:
             return False
-
-        # Only allow drag/move updates on brightness slider
         if ev.kind == "move" and btn.action != "bl_slider":
             return False
 
@@ -670,30 +912,80 @@ class ApplianceUI:
             if btn.action == "bl_down":
                 res = rpc.call({"cmd": "backlight", "action": "down", "step_pct": 15})
                 if res.get("ok"):
-                    bl = res["backlight"]
                     if self.status_data is not None:
-                        self.status_data["backlight"] = bl
-                    self.feedback = f"BRIGHTNESS: {bl['pct']}%"
+                        self.status_data["backlight"] = res["backlight"]
+                    self.feedback = f"BRIGHTNESS: {res['backlight']['pct']}%"
                 return True
 
             if btn.action == "bl_up":
                 res = rpc.call({"cmd": "backlight", "action": "up", "step_pct": 15})
                 if res.get("ok"):
-                    bl = res["backlight"]
                     if self.status_data is not None:
-                        self.status_data["backlight"] = bl
-                    self.feedback = f"BRIGHTNESS: {bl['pct']}%"
+                        self.status_data["backlight"] = res["backlight"]
+                    self.feedback = f"BRIGHTNESS: {res['backlight']['pct']}%"
                 return True
 
             if btn.action == "bl_slider":
                 val = self.slider_value_for_x(ev.x)
                 res = rpc.call({"cmd": "backlight", "action": "set", "value": val})
                 if res.get("ok"):
-                    bl = res["backlight"]
                     if self.status_data is not None:
-                        self.status_data["backlight"] = bl
-                    self.feedback = f"BRIGHTNESS: {bl['pct']}%"
+                        self.status_data["backlight"] = res["backlight"]
+                    self.feedback = f"BRIGHTNESS: {res['backlight']['pct']}%"
                 return True
+
+            if btn.action == "tab":
+                self.tab = btn.arg
+                self.feedback = f"MODE: {btn.arg.upper()}"
+                return True
+
+            if btn.action == "cat":
+                self.category = btn.arg
+                acts = CATEGORY_ACTION_BUTTONS.get(btn.arg, [("Power", "POWER")])
+                self.action = acts[0][0]
+                self.feedback = f"TARGET: {btn.arg.upper()} / {self.action.upper()}"
+                return True
+
+            if btn.action == "u_act":
+                self.action = btn.arg
+                self.feedback = f"ACTION: {self.category.upper()} {btn.arg.upper()}"
+                return True
+
+            if btn.action == "sweep":
+                res = rpc.call(
+                    {
+                        "cmd": "sweep_start",
+                        "mode": btn.arg,
+                        "category": self.category,
+                        "action": self.action,
+                        "priority_brands": self.priority_brands,
+                    }
+                )
+                if self.status_data is not None and "sweep" in res:
+                    self.status_data["sweep"] = res["sweep"]
+                self.feedback = f"SWEEP {btn.arg.upper()}: {self.category.upper()} {self.action.upper()}"
+                return True
+
+            if btn.action == "sweep_lock":
+                res = rpc.call({"cmd": "sweep_lock"})
+                if self.status_data is not None and "sweep" in res:
+                    self.status_data["sweep"] = res["sweep"]
+                locked = (res.get("sweep") or {}).get("locked_signal") or {}
+                self.feedback = f"LOCKED: {locked.get('protocol','?')} {locked.get('label','')}"[:36].upper()
+                return True
+
+            if btn.action == "sweep_stop_or_test":
+                if self._is_sweeping():
+                    res = rpc.call({"cmd": "sweep_stop"})
+                    if self.status_data is not None and "sweep" in res:
+                        self.status_data["sweep"] = res["sweep"]
+                    self.feedback = "SWEEP STOPPED"
+                else:
+                    return self._run_ir_test(rpc, now)
+                return True
+
+            if btn.action == "ir_test":
+                return self._run_ir_test(rpc, now)
 
             if btn.action == "tx_signal":
                 self.active_flash_key = f"sig:{btn.arg}"
@@ -722,13 +1014,41 @@ class ApplianceUI:
             if btn.action == "rf_scan":
                 self.active_flash_key = "rf_scan"
                 self.active_flash_until = now + 0.28
-                res = rpc.call({"cmd": "rf_scan", "auto_load": True}, timeout=6.0)
+                res = rpc.call(
+                    {"cmd": "rf_scan", "auto_load": True, "include_ble": True}, timeout=9.0
+                )
+                self.rf_data = res
+                brands = res.get("brands") or []
+                if brands:
+                    self.priority_brands = list(brands)
                 room = (res.get("matched_room") or {}).get("room_name") or "NONE"
-                aps = res.get("ap_count", 0)
-                sigs = rpc.call({"cmd": "list_signals"}).get("signals", [])
-                if sigs:
-                    self.signals = list(sigs)
-                self.feedback = f"RF: {aps} AP | ROOM: {room[:14].upper()}"
+                self.feedback = (
+                    f"RADAR: {res.get('ap_count', 0)} AP/{res.get('ble_count', 0)} BLE | {room[:12].upper()}"
+                )
+                return True
+
+            if btn.action == "pick_brand":
+                if btn.arg in self.priority_brands:
+                    self.priority_brands = [b for b in self.priority_brands if b != btn.arg]
+                else:
+                    self.priority_brands = [btn.arg] + [
+                        b for b in self.priority_brands if b != btn.arg
+                    ]
+                self.feedback = f"PRIORITY: {', '.join(self.priority_brands[:3]).upper() or 'NONE'}"
+                return True
+
+            if btn.action == "save_room":
+                room_id = f"Room_{int(time.time()) % 1000}"
+                res = rpc.call({"cmd": "save_room", "name": room_id}, timeout=5.0)
+                if res.get("ok"):
+                    self.feedback = f"SAVED FINGERPRINT: {room_id.upper()}"
+                return True
+
+            if btn.action == "privacy_rotate":
+                res = rpc.call({"cmd": "privacy_rotate"}, timeout=5.0)
+                if res.get("ok") and self.status_data is not None:
+                    self.status_data["privacy"] = res["privacy"]
+                    self.feedback = f"NEW ID: {str(res['privacy'].get('hostname','')).upper()}"
                 return True
 
             if btn.action == "screen_off":
@@ -739,22 +1059,6 @@ class ApplianceUI:
             if btn.action == "theme":
                 th = self.cycle_theme()
                 self.feedback = f"THEME: {th.name}"
-                return True
-
-            if btn.action == "ir_test":
-                self.active_flash_key = "ir_test"
-                self.active_flash_until = now + 0.35
-                for _ in range(3):
-                    rpc.call(
-                        {
-                            "cmd": "tx_nec",
-                            "address": NEC_IR_TEST_ADDR,
-                            "command": NEC_IR_TEST_CMD,
-                        }
-                    )
-                    time.sleep(0.06)
-                self.last_tx_data = rpc.call({"cmd": "last_tx"}).get("last_tx")
-                self.feedback = "IR TEST: 3x 38KHZ NEC SENT"
                 return True
 
             if btn.action == "power_off":
@@ -772,6 +1076,22 @@ class ApplianceUI:
 
         return False
 
+    def _run_ir_test(self, rpc: RpcClient, now: float) -> bool:
+        self.active_flash_key = "ir_test"
+        self.active_flash_until = now + 0.35
+        for _ in range(3):
+            rpc.call(
+                {
+                    "cmd": "tx_nec",
+                    "address": NEC_IR_TEST_ADDR,
+                    "command": NEC_IR_TEST_CMD,
+                }
+            )
+            time.sleep(0.06)
+        self.last_tx_data = rpc.call({"cmd": "last_tx"}).get("last_tx")
+        self.feedback = "IR TEST: 3x 38KHZ NEC SENT"
+        return True
+
 
 def run_fb_ui(host: str = "127.0.0.1", port: int = 9000) -> int:
     canvas = FramebufferCanvas.open_fb0()
@@ -788,7 +1108,6 @@ def run_fb_ui(host: str = "127.0.0.1", port: int = 9000) -> int:
         while True:
             now = time.monotonic()
 
-            # Poll sysfs brightness frequently so Vol+/Vol- physical presses appear live
             if now - last_bl_poll >= 0.15:
                 last_bl_poll = now
                 cur_bl = _read_sysfs_brightness()
@@ -801,9 +1120,9 @@ def run_fb_ui(host: str = "127.0.0.1", port: int = 9000) -> int:
                         ui.status_data["backlight"]["blanked"] = cur_bl == 0
                     dirty = True
 
-            # Refresh full telemetry from daemon every 1.2s when screen is awake
             is_blanked = last_sys_bl == 0
-            if not is_blanked and (now - last_poll >= 1.2):
+            poll_interval = 0.25 if ui._is_sweeping() else 1.2
+            if not is_blanked and (now - last_poll >= poll_interval):
                 last_poll = now
                 try:
                     ui.status_data = rpc.call({"cmd": "status"})
@@ -816,7 +1135,6 @@ def run_fb_ui(host: str = "127.0.0.1", port: int = 9000) -> int:
                     ui.feedback = f"DAEMON OFFLINE: {str(exc)[:20].upper()}"
                     dirty = True
 
-            # Clear temporary visual flash or poweroff confirm timeout
             if ui.active_flash_key is not None and now >= ui.active_flash_until:
                 ui.active_flash_key = None
                 dirty = True
@@ -831,15 +1149,16 @@ def run_fb_ui(host: str = "127.0.0.1", port: int = 9000) -> int:
 
             wait_fds = [touch.fd] if touch.fd is not None else []
             if wait_fds:
-                select.select(wait_fds, [], [], 0.12)
+                select.select(wait_fds, [], [], 0.10)
                 events = touch.read_events()
                 if not is_blanked:
                     for ev in events:
                         if ui.handle_touch(ev, rpc, now=time.monotonic()):
                             dirty = True
                             last_bl_poll = 0.0
+                            last_poll = 0.0
             else:
-                time.sleep(0.12)
+                time.sleep(0.10)
     except KeyboardInterrupt:
         return 0
     finally:

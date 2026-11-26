@@ -31,9 +31,24 @@ depend() {
 }
 """
 
+SYSTEMD_PRIVACY_UNIT = """[Unit]
+Description=Pulse 940 Opaque Network Identity & Privacy Shield
+Before=pulse940.service bluetooth.service NetworkManager.service
+After=local-fs.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=/opt/pulse940
+ExecStart=/usr/bin/python3 -m pulse940.net.privacy --apply-boot
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target
+"""
+
 SYSTEMD_UNIT = """[Unit]
 Description=Pulse 940 IR & RF Daemon
-After=network.target systemd-udev-settle.service
+After=network.target systemd-udev-settle.service pulse940-privacy.service bluetooth.service
 
 [Service]
 Type=simple
@@ -115,6 +130,8 @@ def main() -> int:
         sftp.chmod(init_dest, 0o755)
         with sftp.file("/tmp/pulse940.service", "w") as fh:
             fh.write(SYSTEMD_UNIT)
+        with sftp.file("/tmp/pulse940-privacy.service", "w") as fh:
+            fh.write(SYSTEMD_PRIVACY_UNIT)
         sftp.close()
 
         setup_lines = ["#!/bin/sh", "set -e"]
@@ -132,21 +149,31 @@ def main() -> int:
                 "chmod +x /usr/local/bin/pulse940-login",
                 "if command -v systemctl >/dev/null 2>&1; then",
                 "  mv /tmp/pulse940.service /etc/systemd/system/pulse940.service",
+                "  mv /tmp/pulse940-privacy.service /etc/systemd/system/pulse940-privacy.service",
                 "  rm -f /tmp/pulse940.initd",
                 "  mkdir -p /etc/systemd/system/getty@tty1.service.d",
                 "  printf '[Service]\\nExecStart=\\nExecStart=-/sbin/agetty --noclear --skip-login --login-program /usr/local/bin/pulse940-login %%I $TERM\\n' > /etc/systemd/system/getty@tty1.service.d/autologin.conf",
                 "  mkdir -p /etc/systemd/logind.conf.d",
                 "  printf '[Login]\\nHandlePowerKey=ignore\\nHandlePowerKeyLongPress=ignore\\n' > /etc/systemd/logind.conf.d/pulse940-power.conf",
+                "  mkdir -p /etc/systemd/resolved.conf.d",
+                "  printf '[Resolve]\\nLLMNR=no\\nMulticastDNS=no\\n' > /etc/systemd/resolved.conf.d/pulse940-privacy.conf",
+                "  mkdir -p /etc/NetworkManager/conf.d",
+                "  printf '[device]\\nwifi.scan-rand-mac-address=yes\\n\\n[connection]\\nwifi.cloned-mac-address=random\\nipv4.dhcp-send-hostname=no\\nipv6.dhcp-send-hostname=no\\n' > /etc/NetworkManager/conf.d/pulse940-privacy.conf",
+                "  systemctl disable --now avahi-daemon.socket avahi-daemon.service >/dev/null 2>&1 || true",
+                "  systemctl restart systemd-resolved >/dev/null 2>&1 || true",
+                "  if command -v nmcli >/dev/null 2>&1; then nmcli general reload >/dev/null 2>&1 || true; fi",
                 "  rm -f /root/.profile",
                 "  systemctl daemon-reload",
                 "  systemctl restart systemd-logind",
+                "  systemctl enable pulse940-privacy.service",
+                "  /usr/bin/python3 -m pulse940.net.privacy --apply-boot",
                 "  systemctl enable pulse940.service",
                 "  systemctl restart pulse940.service",
                 "  systemctl restart getty@tty1",
                 "  systemctl is-active pulse940.service",
                 "else",
                 "  mv /tmp/pulse940.initd /etc/init.d/pulse940 && chmod 755 /etc/init.d/pulse940",
-                "  rm -f /tmp/pulse940.service",
+                "  rm -f /tmp/pulse940.service /tmp/pulse940-privacy.service",
                 "  sed -i '/^tty1::/d' /etc/inittab",
                 "  echo 'tty1::respawn:/sbin/getty -n -l /usr/local/bin/pulse940-login 38400 tty1' >> /etc/inittab",
                 "  if grep -q '^ttyAMA0' /etc/inittab; then sed -i '/^ttyAMA0::/d' /etc/inittab && echo 'ttyAMA0::respawn:/sbin/getty -n -l /usr/local/bin/pulse940-login 115200 ttyAMA0 vt100' >> /etc/inittab; fi",

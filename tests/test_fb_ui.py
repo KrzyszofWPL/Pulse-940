@@ -1,4 +1,4 @@
-"""Unit tests for the bare-metal /dev/fb0 touch UI renderer & interactions."""
+"""Unit tests for the bare-metal /dev/fb0 3-tab touch UI renderer & interactions."""
 
 from __future__ import annotations
 
@@ -13,7 +13,7 @@ class _FakeRpc:
         self.calls: list[dict] = []
         self.brightness = 128
 
-    def call(self, payload: dict, timeout: float = 1.8) -> dict:
+    def call(self, payload: dict, timeout: float = 2.0) -> dict:
         self.calls.append(payload)
         cmd = payload.get("cmd")
         if cmd == "backlight":
@@ -35,9 +35,7 @@ class _FakeRpc:
                     "blanked": self.brightness == 0,
                 },
             }
-        if cmd == "tx_signal":
-            return {"ok": True, "pulse_count": 67}
-        if cmd == "tx_nec":
+        if cmd in ("tx_signal", "tx_nec"):
             return {"ok": True, "pulse_count": 67}
         if cmd == "last_tx":
             return {
@@ -50,24 +48,58 @@ class _FakeRpc:
                     "pulses_us": [9000, 4500, 560, 560, 560, 1690, 560],
                 },
             }
-        if cmd == "macro":
-            return {"ok": True, "pulse_count": 67, "taps": 2}
+        if cmd == "sweep_start":
+            return {
+                "ok": True,
+                "sweep": {
+                    "active": True,
+                    "mode": payload.get("mode", "quick"),
+                    "category": payload.get("category", "projector"),
+                    "action": payload.get("action", "Power"),
+                    "index": 1,
+                    "total": 22,
+                    "current_label": "Epson",
+                    "current_protocol": "NECext",
+                    "locked_signal": None,
+                },
+            }
+        if cmd in ("sweep_stop", "sweep_lock"):
+            return {
+                "ok": True,
+                "sweep": {
+                    "active": False,
+                    "locked_signal": {"protocol": "NECext", "label": "Epson"},
+                },
+            }
         if cmd == "rf_scan":
             return {
                 "ok": True,
-                "ap_count": 5,
+                "ap_count": 4,
+                "ble_count": 2,
+                "brands": ["Epson", "Samsung"],
                 "matched_room": {"room_name": "Lecture_101"},
+                "aps": [{"ssid": "LAB-AP", "bssid": "00:26:ab:11:22:33"}],
             }
-        if cmd == "list_signals":
-            return {"ok": True, "signals": ["Power", "HDMI1"]}
+        if cmd == "privacy_rotate":
+            return {
+                "ok": True,
+                "privacy": {
+                    "hostname": "dev-a1b2c3d4",
+                    "wlan_mac": "02:11:22:33:44:55",
+                    "avahi_active": False,
+                    "bt_discoverable": False,
+                    "stealth_ok": True,
+                },
+            }
+        if cmd == "save_room":
+            return {"ok": True}
         if cmd == "poweroff":
             return {"ok": True, "powering_off": True}
         return {"ok": True}
 
 
 class TestFramebufferUI(unittest.TestCase):
-    def test_bgrx_pixel_packing_and_stride_rendering(self) -> None:
-        # Redmi 4A fb0 format: R=16, G=8, B=0 -> BGRX little endian
+    def test_bgrx_pixel_packing_and_all_tabs_render(self) -> None:
         px = pack_pixel_bytes((0xAA, 0xBB, 0xCC), r_off=16, g_off=8, b_off=0, bpp=32)
         self.assertEqual(px, bytes([0xCC, 0xBB, 0xAA, 0x00]))
 
@@ -79,6 +111,14 @@ class TestFramebufferUI(unittest.TestCase):
             "lirc_backend": "native_lirc",
             "power": {"capacity_pct": 92, "voltage_mv": 4330, "temp_c": 38.5},
             "backlight": {"pct": 50, "blanked": False},
+            "privacy": {
+                "hostname": "dev-1a2b3c4d",
+                "wlan_mac": "02:aa:bb:cc:dd:ee",
+                "avahi_active": False,
+                "bt_discoverable": False,
+                "stealth_ok": True,
+            },
+            "sweep": {"active": False, "index": 0, "total": 0},
         }
         ui.signals = ["Power", "Freeze", "HDMI1", "AV_Mute"]
         ui.last_tx_data = {
@@ -88,36 +128,47 @@ class TestFramebufferUI(unittest.TestCase):
             "total_duration_us": 17430,
             "pulses_us": [9000, 4500, 560, 560, 560, 1690, 560],
         }
-        ui.render(canvas, now=10.0)
-        self.assertEqual(len(canvas.buf), 2944 * 1280)
-        self.assertTrue(any(canvas.buf[: 2944 * 100]))
+        for tab_name in ("universal", "remote", "radar"):
+            ui.tab = tab_name
+            ui.render(canvas, now=10.0)
+            self.assertEqual(len(canvas.buf), 2944 * 1280)
+            self.assertTrue(any(canvas.buf[: 2944 * 100]))
 
-    def test_touch_controls_brightness_signals_and_poweroff_confirm(self) -> None:
+    def test_touch_3_tabs_sweeps_radar_and_poweroff_confirm(self) -> None:
         ui = ApplianceUI(width=720, height=1280)
+        ui.status_data = {"sweep": {"active": False}}
         ui.signals = ["Power", "Freeze"]
         rpc = _FakeRpc()
 
-        # Tap brightness '+' button
-        self.assertTrue(ui.handle_touch(TouchEvent("down", 630, 190), rpc, now=1.0))
+        # Brightness controls
+        self.assertTrue(ui.handle_touch(TouchEvent("down", 630, 168), rpc, now=1.0))
         self.assertEqual(rpc.calls[-1]["action"], "up")
-
-        # Drag brightness slider
-        self.assertTrue(ui.handle_touch(TouchEvent("move", 360, 190), rpc, now=1.1))
+        self.assertTrue(ui.handle_touch(TouchEvent("move", 360, 168), rpc, now=1.1))
         self.assertEqual(rpc.calls[-1]["action"], "set")
 
-        # Tap first signal card ("Power")
-        self.assertTrue(ui.handle_touch(TouchEvent("down", 120, 520), rpc, now=1.2))
+        # Default tab: UNIVERSAL -> select TV + QUICK SWEEP -> STOP & LOCK
+        self.assertTrue(ui.handle_touch(TouchEvent("down", 250, 330), rpc, now=1.2))
+        self.assertEqual(ui.category, "tv")
+        self.assertTrue(ui.handle_touch(TouchEvent("down", 200, 520), rpc, now=1.3))
+        self.assertEqual(rpc.calls[-1]["cmd"], "sweep_start")
+        self.assertEqual(rpc.calls[-1]["mode"], "quick")
+        self.assertTrue(ui.handle_touch(TouchEvent("down", 360, 780), rpc, now=1.4))
+        self.assertEqual(rpc.calls[-1]["cmd"], "sweep_lock")
+
+        # Switch to REMOTE tab and tap first signal card
+        self.assertTrue(ui.handle_touch(TouchEvent("down", 350, 250), rpc, now=1.5))
+        self.assertEqual(ui.tab, "remote")
+        self.assertTrue(ui.handle_touch(TouchEvent("down", 120, 520), rpc, now=1.6))
         self.assertEqual(rpc.calls[-2], {"cmd": "tx_signal", "name": "Power"})
 
-        # Cycle theme
-        old_idx = ui.theme_idx
-        self.assertTrue(ui.handle_touch(TouchEvent("down", 260, 1200), rpc, now=1.3))
-        self.assertNotEqual(ui.theme_idx, old_idx)
-
-        # Tap IR TEST
-        self.assertTrue(ui.handle_touch(TouchEvent("down", 440, 1200), rpc, now=1.4))
-        nec_calls = [c for c in rpc.calls if c.get("cmd") == "tx_nec"]
-        self.assertEqual(len(nec_calls), 3)
+        # Switch to RADAR tab, run passive Wi-Fi/BLE scan, save room, rotate privacy ID
+        self.assertTrue(ui.handle_touch(TouchEvent("down", 560, 250), rpc, now=1.7))
+        self.assertEqual(ui.tab, "radar")
+        self.assertTrue(ui.handle_touch(TouchEvent("down", 360, 330), rpc, now=1.8))
+        self.assertEqual(rpc.calls[-1]["cmd"], "rf_scan")
+        self.assertEqual(ui.priority_brands, ["Epson", "Samsung"])
+        self.assertTrue(ui.handle_touch(TouchEvent("down", 560, 990), rpc, now=1.9))
+        self.assertEqual(rpc.calls[-1]["cmd"], "privacy_rotate")
 
         # Two-tap POWER OFF safety confirmation
         self.assertTrue(ui.handle_touch(TouchEvent("down", 600, 1200), rpc, now=2.0))
