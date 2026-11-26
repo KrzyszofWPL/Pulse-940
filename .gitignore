@@ -26,3 +26,7 @@ vm/*.img
 vm/*.fd
 vm/*.vars
 
+# Private room fingerprints / local IR overrides
+profiles/*.local.json
+profiles/*.local.ir
+

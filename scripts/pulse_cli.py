@@ -30,6 +30,9 @@ def main(argv: list[str] | None = None) -> int:
     sub.add_parser("last-tx")
     sub.add_parser("list-signals")
 
+    rf_p = sub.add_parser("rf-scan")
+    rf_p.add_argument("--auto-load", action="store_true", help="Auto-load matched room .ir")
+
     tx_p = sub.add_parser("tx-raw")
     tx_p.add_argument("--carrier", type=int, default=38000)
     tx_p.add_argument("--duty", type=int, default=33)
@@ -71,6 +74,8 @@ def main(argv: list[str] | None = None) -> int:
         req = {"cmd": "last_tx"}
     elif args.command == "list-signals":
         req = {"cmd": "list_signals"}
+    elif args.command == "rf-scan":
+        req = {"cmd": "rf_scan", "auto_load": args.auto_load}
     elif args.command == "tx-raw":
         req = {
             "cmd": "tx_raw",

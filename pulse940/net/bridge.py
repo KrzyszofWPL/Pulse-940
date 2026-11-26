@@ -13,6 +13,8 @@ from pulse940.hal.lirc import LircDevice, TxResult
 from pulse940.hal.power import PowerMonitor
 from pulse940.ir.macros import IrMacroEngine
 from pulse940.ir.nec import NEC_CARRIER_HZ, NEC_DUTY_CYCLE, encode_nec, encode_necext
+from pulse940.rf.rooms import RoomProfile, match_room
+from pulse940.rf.wifi import WifiScanner, detect_brands
 
 
 class CommandDispatcher:
@@ -23,10 +25,14 @@ class CommandDispatcher:
         lirc: LircDevice,
         power: PowerMonitor,
         macros: IrMacroEngine | None = None,
+        wifi: WifiScanner | None = None,
+        rooms: list[RoomProfile] | None = None,
     ) -> None:
         self.lirc = lirc
         self.power = power
         self.macros = macros or IrMacroEngine(lirc=lirc)
+        self.wifi = wifi or WifiScanner()
+        self.rooms = rooms or []
         self.started_at = time.time()
         self.last_tx: TxResult | None = None
         self._lock = threading.Lock()
@@ -137,6 +143,24 @@ class CommandDispatcher:
             if action == "loop_stop":
                 return {"ok": True, "stopped": self.macros.stop_loop()}
             return {"ok": False, "error": f"Unknown macro action: {action!r}"}
+
+        if cmd == "rf_scan":
+            source, aps = self.wifi.scan()
+            brands = detect_brands([ap.ssid for ap in aps if ap.ssid])
+            match = match_room(aps, self.rooms)
+            auto_loaded = False
+            if match is not None and bool(payload.get("auto_load", False)):
+                self.macros.load_profile(match.ir_profile)
+                auto_loaded = True
+            return {
+                "ok": True,
+                "source": source,
+                "ap_count": len(aps),
+                "aps": [asdict(ap) for ap in aps],
+                "brands": brands,
+                "matched_room": asdict(match) if match else None,
+                "auto_loaded": auto_loaded,
+            }
 
         return {"ok": False, "error": f"Unknown command: {cmd!r}"}
 

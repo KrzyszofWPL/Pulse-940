@@ -12,6 +12,8 @@ from pulse940.hal.lirc import create_lirc_device
 from pulse940.hal.power import PowerMonitor
 from pulse940.ir.macros import IrMacroEngine
 from pulse940.net.bridge import BridgeServer, CommandDispatcher
+from pulse940.rf.rooms import find_default_rooms_file, load_room_profiles
+from pulse940.rf.wifi import WifiScanner
 
 logging.basicConfig(
     level=logging.INFO,
@@ -39,7 +41,15 @@ def main(argv: list[str] | None = None) -> int:
         loaded = macros.load_profile(args.profile)
         log.info("Loaded IR profile %s (%d signals)", args.profile, len(loaded))
 
-    dispatcher = CommandDispatcher(lirc=lirc, power=power, macros=macros)
+    wifi = WifiScanner(force_mock=args.mock)
+    rooms_file = find_default_rooms_file()
+    rooms = load_room_profiles(rooms_file) if rooms_file else []
+    if rooms:
+        log.info("Loaded %d room fingerprint(s) from %s", len(rooms), rooms_file)
+
+    dispatcher = CommandDispatcher(
+        lirc=lirc, power=power, macros=macros, wifi=wifi, rooms=rooms
+    )
     server = BridgeServer(dispatcher=dispatcher, host=args.host, port=args.port)
 
     stop_event = threading.Event()

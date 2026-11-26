@@ -74,6 +74,6 @@ The repository currently includes the **QEMU ARM64 (`aarch64`)** virtual machine
 - [x] Hardware Abstraction Layer (`MockLircDevice` + TCP bridge)
 - [x] Flipper-IRDB `.ir` parser & NEC/NECext 38 kHz encoder
 - [x] Background daemon + JSON protocol (TCP / RFCOMM-ready)
-- [ ] Passive Wi-Fi BSSID/RSSI fingerprinting & room profiles
+- [x] Passive Wi-Fi BSSID/RSSI fingerprinting & room profiles
 - [ ] Monochrome `tty1` TUI + `evdev` controls & live PWM visualizer
 - [ ] Deployment to target ARM64 mobile hardware (`lk2nd` / mainline Linux + postmarketOS)

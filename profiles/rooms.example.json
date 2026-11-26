@@ -1,0 +1,12 @@
+{
+  "rooms": [
+    {
+      "name": "Lab-101-Demo",
+      "ir_profile": "profiles/demo_projector.ir",
+      "bssids": {
+        "aa:bb:cc:11:22:01": -50,
+        "aa:bb:cc:11:22:02": -65
+      }
+    }
+  ]
+}
