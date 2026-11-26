@@ -91,24 +91,31 @@ def main() -> int:
         sftp.chmod("/etc/init.d/pulse940", 0o755)
         sftp.close()
 
-        print("Fixing autologin on tty1 and ttyAMA0 in /etc/inittab...")
+        print("Installing site-packages .pth and /usr/local/bin/pulse940-tui...")
+        run_ssh(
+            client,
+            "SP=$(python3 -c 'import site; print(site.getsitepackages()[0])') && "
+            "echo '/opt/pulse940' > \"$SP/pulse940.pth\"",
+        )
+        run_ssh(
+            client,
+            "printf '#!/bin/sh\\ncd /opt/pulse940 && exec python3 -m pulse940.tui.app \"$@\"\\n' > /usr/local/bin/pulse940-tui && "
+            "chmod +x /usr/local/bin/pulse940-tui",
+        )
+        run_ssh(
+            client,
+            "printf '#!/bin/sh\\nexport TERM=xterm-256color\\ncd /opt/pulse940 && python3 -m pulse940.tui.app\\nexec /bin/sh -l\\n' > /usr/local/bin/pulse940-login && "
+            "chmod +x /usr/local/bin/pulse940-login",
+        )
+
+        print("Fixing autologin + boot-to-TUI on tty1 and ttyAMA0 in /etc/inittab...")
         inittab_fix = (
             "sed -i '/^tty1::/d; /^ttyAMA0::/d' /etc/inittab && "
-            "printf 'tty1::respawn:/sbin/getty -n -l /bin/sh 38400 tty1\\n"
-            "ttyAMA0::respawn:/sbin/getty -n -l /bin/sh 115200 ttyAMA0 vt100\\n' >> /etc/inittab && "
+            "printf 'tty1::respawn:/sbin/getty -n -l /usr/local/bin/pulse940-login 38400 tty1\\n"
+            "ttyAMA0::respawn:/sbin/getty -n -l /usr/local/bin/pulse940-login 115200 ttyAMA0 vt100\\n' >> /etc/inittab && "
             "kill -HUP 1"
         )
         run_ssh(client, inittab_fix)
-
-        print("Configuring boot-to-TUI on local console in /root/.profile...")
-        profile_cmd = (
-            "cat << 'EOF' > /root/.profile\n"
-            "if [ -z \"$SSH_CONNECTION\" ] && [ -t 0 ]; then\n"
-            "    cd /opt/pulse940 && python3 -m pulse940.tui.app\n"
-            "fi\n"
-            "EOF"
-        )
-        run_ssh(client, profile_cmd)
 
         print("Enabling and starting pulse940 OpenRC service...")
         run_ssh(client, "rc-update add pulse940 default >/dev/null 2>&1 || true")
