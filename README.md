@@ -76,4 +76,4 @@ The repository currently includes the **QEMU ARM64 (`aarch64`)** virtual machine
 - [x] Background daemon + JSON protocol (TCP / RFCOMM-ready)
 - [x] Passive Wi-Fi BSSID/RSSI fingerprinting & room profiles
 - [x] Monochrome `tty1` TUI + `evdev` controls & live PWM visualizer
-- [ ] Deployment to target ARM64 mobile hardware (`lk2nd` / mainline Linux + postmarketOS)
+- [x] Deployment to target ARM64 mobile hardware (`lk2nd` / mainline Linux + postmarketOS)
