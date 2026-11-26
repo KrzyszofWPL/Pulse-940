@@ -100,6 +100,16 @@ def main() -> int:
         )
         run_ssh(client, inittab_fix)
 
+        print("Configuring boot-to-TUI on local console in /root/.profile...")
+        profile_cmd = (
+            "cat << 'EOF' > /root/.profile\n"
+            "if [ -z \"$SSH_CONNECTION\" ] && [ -t 0 ]; then\n"
+            "    cd /opt/pulse940 && python3 -m pulse940.tui.app\n"
+            "fi\n"
+            "EOF"
+        )
+        run_ssh(client, profile_cmd)
+
         print("Enabling and starting pulse940 OpenRC service...")
         run_ssh(client, "rc-update add pulse940 default >/dev/null 2>&1 || true")
         run_ssh(client, "rc-service pulse940 stop >/dev/null 2>&1 || pkill -9 -f '[p]ulse940.daemon' >/dev/null 2>&1 || true")
